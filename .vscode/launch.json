@@ -11,9 +11,9 @@
             "mode": "debug",
             "cwd": "${workspaceFolder}/src/main",
             "preLaunchTask":"build",
-            "program": "${workspaceFolder}/src/main/mrsequential.go",
+            "program": "${workspaceFolder}/src/main/mrworker.go",
             "env": {},
-            "args": ["wc.so","pg*.txt"]
+            "args": ["wc.so"]
         }
     ]
 }

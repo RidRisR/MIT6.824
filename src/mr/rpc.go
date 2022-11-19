@@ -13,6 +13,7 @@ import (
 )
 
 const (
+	FREE   = "FREE"
 	MAP    = "MAP"
 	REDUCE = "REDUCE"
 )
@@ -28,14 +29,18 @@ type ExampleReply struct {
 }
 
 type TaskArgs struct {
-	WorkerId   int
-	LastTaskId int
+	WorkerId     int
+	LastTaskId   int
+	LastTaskType string
+	Finished     bool
 }
 
 type TaskReply struct {
-	TaskId   int
-	TaskType string
-	FileName string
+	TaskId    int
+	TaskType  string
+	FileName  string
+	ReduceNum int
+	Checked   bool
 }
 
 type TaskInfo struct {
@@ -44,7 +49,6 @@ type TaskInfo struct {
 	TaskType string
 	FileName string
 	Expire   time.Time
-	finished bool
 }
 
 // Cook up a unique-ish UNIX-domain socket name

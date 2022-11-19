@@ -11,12 +11,11 @@ import (
 
 type Coordinator struct {
 	// Your definitions here.
-	TaskMap    map[int]TaskInfo
+	TaskMap    map[int]*TaskInfo
 	Dispatcher chan TaskReply
 	Stage      string
 	ReducerNum int
 	MapNum     int
-	TaskNum    int
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -54,29 +53,44 @@ func (c *Coordinator) Done() bool {
 }
 
 func (c *Coordinator) AskForTask(args *TaskArgs, reply *TaskReply) error {
-	lastTask := c.TaskMap[args.LastTaskId]
+	checked := false
 	if args.LastTaskId != -1 {
-		if lastTask.WorkerId == args.WorkerId && lastTask.finished == false {
-			c.TaskNum -= 1
-			//TODO:commit
+		lastTask := c.TaskMap[args.LastTaskId]
+		if lastTask.WorkerId == args.WorkerId && args.Finished {
+			log.Printf("Task %d: checked", args.LastTaskId)
+			checked = true
+			delete(c.TaskMap, args.LastTaskId)
+		}
+		if lastTask.WorkerId == args.WorkerId && !args.Finished {
+			log.Printf("Task %d: failed", args.LastTaskId)
+			c.Dispatcher <- TaskReply{
+				TaskId:   lastTask.TaskId,
+				TaskType: lastTask.TaskType,
+				FileName: lastTask.FileName,
+			}
 		}
 	}
 
 	if len(c.Dispatcher) != 0 {
 		*reply = <-c.Dispatcher
-		c.TaskMap[reply.TaskId] = TaskInfo{
+		reply.Checked = checked
+		if !checked {
+			log.Printf("Task %d: re-dispatched", reply.TaskId)
+		}
+		c.TaskMap[reply.TaskId] = &TaskInfo{
 			WorkerId: args.WorkerId,
 			TaskId:   reply.TaskId,
 			TaskType: reply.TaskType,
 			FileName: reply.FileName,
 			Expire:   time.Now().Add(10 * time.Second),
-			finished: false,
 		}
 	}
 
-	if c.TaskNum == 0 {
-		//TODO:Change Stage
+	if len(c.TaskMap) == 0 {
+		log.Printf("AAAAA!!!!! ")
 	}
+
+	return nil
 }
 
 // create a Coordinator.
@@ -89,21 +103,21 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	}
 
 	c := Coordinator{
-		TaskMap:    make(map[int]TaskInfo),
+		TaskMap:    make(map[int]*TaskInfo),
 		Dispatcher: make(chan TaskReply, len_dispatcher),
 		Stage:      MAP,
 		ReducerNum: nReduce,
 		MapNum:     len(files),
-		TaskNum:    len(files),
 	}
 
 	for i, file := range files {
-		task := TaskReply{
-			TaskId:   i,
-			TaskType: MAP,
-			FileName: file,
+		c.Dispatcher <- TaskReply{
+			TaskId:    i,
+			TaskType:  MAP,
+			FileName:  file,
+			ReduceNum: nReduce,
+			Checked:   false,
 		}
-		c.Dispatcher <- task
 	}
 
 	// Your code here.
