@@ -6,13 +6,14 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"strconv"
 	"time"
 )
 
 type Coordinator struct {
 	// Your definitions here.
 	TaskMap    map[int]*TaskInfo
-	Dispatcher chan TaskReply
+	dispatcher chan TaskReply
 	Stage      string
 	ReducerNum int
 	MapNum     int
@@ -45,38 +46,17 @@ func (c *Coordinator) server() {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	ret := false
 
 	// Your code here.
 
-	return ret
+	return (c.Stage == CLOSE)
 }
 
 func (c *Coordinator) AskForTask(args *TaskArgs, reply *TaskReply) error {
-	checked := false
-	if args.LastTaskId != -1 {
-		lastTask := c.TaskMap[args.LastTaskId]
-		if lastTask.WorkerId == args.WorkerId && args.Finished {
-			log.Printf("Task %d: checked", args.LastTaskId)
-			checked = true
-			delete(c.TaskMap, args.LastTaskId)
-		}
-		if lastTask.WorkerId == args.WorkerId && !args.Finished {
-			log.Printf("Task %d: failed", args.LastTaskId)
-			c.Dispatcher <- TaskReply{
-				TaskId:   lastTask.TaskId,
-				TaskType: lastTask.TaskType,
-				FileName: lastTask.FileName,
-			}
-		}
-	}
+	c.checkLastTask(args)
 
-	if len(c.Dispatcher) != 0 {
-		*reply = <-c.Dispatcher
-		reply.Checked = checked
-		if !checked {
-			log.Printf("Task %d: re-dispatched", reply.TaskId)
-		}
+	if len(c.dispatcher) != 0 {
+		*reply = <-c.dispatcher
 		c.TaskMap[reply.TaskId] = &TaskInfo{
 			WorkerId: args.WorkerId,
 			TaskId:   reply.TaskId,
@@ -84,13 +64,92 @@ func (c *Coordinator) AskForTask(args *TaskArgs, reply *TaskReply) error {
 			FileName: reply.FileName,
 			Expire:   time.Now().Add(10 * time.Second),
 		}
+		return nil
 	}
 
 	if len(c.TaskMap) == 0 {
-		log.Printf("AAAAA!!!!! ")
+		if c.Stage == MAP {
+			c.Stage = REDUCE
+			c.changeStage()
+			*reply = TaskReply{
+				TaskId:   -1,
+				TaskType: FREE,
+			}
+		}
+		if c.Stage == REDUCE {
+			c.Stage = CLOSE
+			close(c.dispatcher)
+		}
 	}
 
 	return nil
+}
+
+func (c *Coordinator) checkLastTask(args *TaskArgs) {
+	if args.LastTaskId == -1 || args.LastTaskType == FREE {
+		return
+	}
+	lastTask := c.TaskMap[args.LastTaskId]
+	if lastTask.WorkerId == args.WorkerId && args.Finished {
+		log.Printf("Task %d: checked", args.LastTaskId)
+		go commit(args.WorkerId, lastTask.TaskId, lastTask.TaskType, c.ReducerNum)
+		delete(c.TaskMap, args.LastTaskId)
+	}
+	if lastTask.WorkerId == args.WorkerId && !args.Finished {
+		log.Printf("Task %d: re-dispatch", args.LastTaskId)
+		c.dispatcher <- TaskReply{
+			TaskId:   lastTask.TaskId,
+			TaskType: lastTask.TaskType,
+			FileName: lastTask.FileName,
+		}
+	}
+	if lastTask.WorkerId != args.WorkerId && args.Finished {
+		log.Printf("Task %d: wrong worker. worker %d submitted, it should be worker %d", args.LastTaskId, args.WorkerId, lastTask.WorkerId)
+		for i := 0; i < c.ReducerNum; i++ {
+			dirToRemove := getTempMapDir(args.WorkerId, args.LastTaskId, i)
+			err := os.Remove(dirToRemove)
+			if err != nil {
+				log.Fatalf("Task %d: cannot remove %s", lastTask.TaskId, dirToRemove)
+				return
+			}
+		}
+	}
+}
+
+func commit(workerId int, taskId int, taskType string, nReduce int) {
+	if taskType == MAP {
+		for i := 0; i < nReduce; i++ {
+			oldPath := getTempMapDir(workerId, taskId, i)
+			newPath := getFinalMapDir(taskId, i)
+			err := os.Rename(oldPath, newPath)
+			if err != nil {
+				log.Fatalf(
+					"Failed to mark map output file as final: %e", err)
+			}
+		}
+	}
+	if taskType == REDUCE {
+		err := os.Rename(
+			getTempReduceDir(workerId, taskId),
+			getOutDir(taskId))
+		if err != nil {
+			log.Fatalf(
+				"Failed to mark reduce output file  as final: %e", err)
+		}
+	}
+}
+
+func (c *Coordinator) changeStage() {
+	c.TaskMap = make(map[int]*TaskInfo)
+	for i := 0; i < c.ReducerNum; i++ {
+		c.dispatcher <- TaskReply{
+			TaskId:    i,
+			TaskType:  REDUCE,
+			FileName:  strconv.Itoa(i),
+			ReduceNum: c.ReducerNum,
+			MapNum:    c.MapNum,
+		}
+	}
 }
 
 // create a Coordinator.
@@ -104,19 +163,19 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 	c := Coordinator{
 		TaskMap:    make(map[int]*TaskInfo),
-		Dispatcher: make(chan TaskReply, len_dispatcher),
+		dispatcher: make(chan TaskReply, len_dispatcher),
 		Stage:      MAP,
 		ReducerNum: nReduce,
 		MapNum:     len(files),
 	}
 
 	for i, file := range files {
-		c.Dispatcher <- TaskReply{
+		c.dispatcher <- TaskReply{
 			TaskId:    i,
 			TaskType:  MAP,
 			FileName:  file,
 			ReduceNum: nReduce,
-			Checked:   false,
+			MapNum:    len(files),
 		}
 	}
 

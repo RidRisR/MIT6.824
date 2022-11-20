@@ -16,6 +16,7 @@ const (
 	FREE   = "FREE"
 	MAP    = "MAP"
 	REDUCE = "REDUCE"
+	CLOSE  = "CLOSE"
 )
 
 // Add your RPC definitions here.
@@ -40,7 +41,7 @@ type TaskReply struct {
 	TaskType  string
 	FileName  string
 	ReduceNum int
-	Checked   bool
+	MapNum    int
 }
 
 type TaskInfo struct {

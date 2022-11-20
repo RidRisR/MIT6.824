@@ -7,7 +7,15 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"sort"
+	"strings"
 )
+
+type ByKey []KeyValue
+
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 // Map functions return a slice of KeyValue.
 type KeyValue struct {
@@ -34,6 +42,7 @@ func Worker(mapf func(string, string) []KeyValue,
 	lastTaskId := -1
 	lastTaskType := FREE
 	finished := false
+
 	for {
 		args := TaskArgs{
 			WorkerId:     workerId,
@@ -47,16 +56,23 @@ func Worker(mapf func(string, string) []KeyValue,
 			log.Printf("Worker %d: RPC Error!\n", workerId)
 			return
 		}
-		if reply.Checked {
-			go commit(workerId, lastTaskId, lastTaskType, reply.ReduceNum)
-		}
 
 		switch reply.TaskType {
 		case MAP:
 			//TODO:map
 			finished = doMap(mapf, args, reply)
+			if finished {
+				log.Printf("Worker %d: %s Task %d done\n", workerId, reply.TaskType, reply.TaskId)
+			} else {
+				log.Printf("Worker %d: %s Task %d failed\n", workerId, reply.TaskType, reply.TaskId)
+			}
 		case REDUCE:
 			//TODO:reduce
+			finished = doReduce(reducef, args, reply)
+		case FREE:
+			finished = false
+		case CLOSE:
+			return
 		}
 
 		lastTaskId = reply.TaskId
@@ -68,19 +84,57 @@ func Worker(mapf func(string, string) []KeyValue,
 
 }
 
-// TODO:commit
-func commit(workerId int, taskId int, taskType string, nReduce int) {
-	if taskType == MAP {
-		for i := 0; i < nReduce; i++ {
-			oldPath := createTempDir(workerId, taskId, i)
-			newPath := createFinalDir(taskId, i)
-			err := os.Rename(oldPath, newPath)
-			if err != nil {
-				log.Fatalf(
-					"Failed to mark map output file as final: %e", err)
-			}
+func doReduce(reducef func(string, []string) string, args TaskArgs, reply TaskReply) bool {
+	var contents []string
+	for i := 0; i < reply.MapNum; i++ {
+		filename := getFinalMapDir(i, reply.TaskId)
+		file, err := os.Open(filename)
+		if err != nil {
+			log.Fatalf("cannot open %v", filename)
+			return false
 		}
+		content, err := ioutil.ReadAll(file)
+		if err != nil {
+			log.Fatalf("cannot read %v", filename)
+			return false
+		}
+		file.Close()
+		contents = append(contents, strings.Split(string(content), "\n")...)
 	}
+
+	var kva []KeyValue
+	for _, line := range contents {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		parts := strings.Split(line, "\t")
+		kva = append(kva, KeyValue{
+			Key:   parts[0],
+			Value: parts[1],
+		})
+	}
+
+	sort.Sort(ByKey(kva))
+	os.Mkdir("reduce", os.ModePerm)
+	ofile, _ := os.Create(getTempReduceDir(args.WorkerId, reply.TaskId))
+
+	i := 0
+	for i < len(kva) {
+		j := i + 1
+		for j < len(kva) && kva[j].Key == kva[i].Key {
+			j++
+		}
+		var values []string
+		for k := i; k < j; k++ {
+			values = append(values, kva[k].Value)
+		}
+		output := reducef(kva[i].Key, values)
+		fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
+
+		i = j
+	}
+	ofile.Close()
+	return true
 }
 
 func doMap(mapf func(string, string) []KeyValue, args TaskArgs, reply TaskReply) bool {
@@ -102,7 +156,7 @@ func doMap(mapf func(string, string) []KeyValue, args TaskArgs, reply TaskReply)
 	}
 	os.Mkdir("map", os.ModePerm)
 	for i := 0; i < reply.ReduceNum; i++ {
-		tempFile, _ := os.Create(createTempDir(args.WorkerId, reply.TaskId, i))
+		tempFile, _ := os.Create(getTempMapDir(args.WorkerId, reply.TaskId, i))
 		for _, kv := range temp_out_map[i] {
 			fmt.Fprintf(tempFile, "%v\t%v\n", kv.Key, kv.Value)
 		}
@@ -159,10 +213,18 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	return false
 }
 
-func createTempDir(workerId int, mapId int, reduceId int) string {
+func getTempMapDir(workerId int, mapId int, reduceId int) string {
 	return fmt.Sprintf("map/temp-%d-%d-%d", workerId, mapId, reduceId)
 }
 
-func createFinalDir(mapId int, reduceId int) string {
+func getFinalMapDir(mapId int, reduceId int) string {
 	return fmt.Sprintf("map/final-%d-%d", mapId, reduceId)
+}
+
+func getTempReduceDir(workerId int, reduceId int) string {
+	return fmt.Sprintf("reduce/temp-%d-out-%d", workerId, reduceId)
+}
+
+func getOutDir(reduceId int) string {
+	return fmt.Sprintf("mr-out-%d", reduceId)
 }
