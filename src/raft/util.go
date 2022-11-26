@@ -27,7 +27,7 @@ const (
 	dWarn    logTopic = "WARN"
 )
 
-var rolePrint = []string{"LDR", "FLW", "CDD"}
+var rolePrint = []string{"LDR", "FOW", "CAN"}
 
 // Debugging
 const Debug = true
