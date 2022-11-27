@@ -60,7 +60,8 @@ type ApplyMsg struct {
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
-	mu        sync.Mutex          // Lock to protect shared access to this peer's state
+	mu        sync.Mutex // Lock to protect shared access to this peer's state
+	logMu     sync.Mutex
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
@@ -75,14 +76,17 @@ type Raft struct {
 
 	//volatile
 	commitIndex      int
+	commitTerm       int64
 	lastAppliedIndex int
-	nextIndex        []int
-	matchIndex       []int
 	msgCh            chan LogEntrie
 	applyCh          chan ApplyMsg
 	heartbeatTimeout time.Duration
 	electionTimeout  time.Duration
 	state            int32
+
+	//volatile for leader
+	nextIndex  []int64
+	matchIndex []int64
 }
 
 // return currentTerm and whether this server
@@ -195,14 +199,14 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Your code here (2B).
 	isLeader := (atomic.LoadInt32(&rf.state) == LEADER)
-	term := int(atomic.LoadInt64(&rf.currentTerm))
-	index := -1
-
-	if isLeader {
-
+	term := atomic.LoadInt64(&rf.currentTerm)
+	if !isLeader {
+		return -1, int(term), isLeader
 	}
+	index := rf.getLogLength() + 1
+	rf.sendLog(command)
 
-	return index, term, isLeader
+	return index, int(term), isLeader
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -214,6 +218,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // up CPU time, perhaps causing later tests to fail and generating
 // confusing debug output. any goroutine with a long-running loop
 // should call killed() to check whether it should stop.
+func (rf *Raft) getLogLength() int {
+	rf.logMu.Lock()
+	defer rf.logMu.Unlock()
+	return len(rf.log)
+}
+
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
@@ -224,10 +234,69 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+func (rf *Raft) sendLog(command interface{}) {
+	index := rf.getLogLength()
+	newLog := LogEntrie{
+		Leader:  rf.me,
+		Term:    atomic.LoadInt64(&rf.currentTerm),
+		Command: command,
+	}
+	rf.logMu.Lock()
+	rf.log = append(rf.log, newLog)
+	rf.logMu.Unlock()
+	args := &AppendEntriesArgs{
+		Type:         LOG,
+		Term:         atomic.LoadInt64(&rf.currentTerm),
+		LeaderId:     rf.me,
+		PrevLogIndex: index,
+		PrevLogTerm:  rf.commitTerm,
+		LeaderCommit: rf.commitIndex,
+	}
+	for i := 0; i < len(rf.peers); i++ {
+		if i == rf.me {
+			continue
+		}
+		reply := &AppendEntriesReply{}
+		nextIndex := atomic.LoadInt64(&rf.nextIndex[i])
+		if args.PrevLogIndex+1 >= int(nextIndex) {
+			rf.logMu.Lock()
+			args.Entries = rf.log[nextIndex:]
+			rf.logMu.Unlock()
+		} else {
+			panic("Leader should have longer log")
+		}
+		go func(i int, args AppendEntriesArgs) {
+			for {
+				for !rf.peers[i].Call("Raft.AppendEntries", &args, reply) {
+					time.Sleep(rf.heartbeatTimeout)
+					if atomic.LoadInt32(&rf.state) != LEADER || atomic.LoadInt64(&rf.currentTerm) != args.Term {
+						return
+					}
+				}
+				if reply.Accepted {
+					logLength := rf.getLogLength()
+					atomic.StoreInt64(&rf.nextIndex[i], int64(logLength))
+					atomic.StoreInt64(&rf.matchIndex[i], int64(logLength-1))
+					return
+				}
+				if args.Term == reply.Term {
+					atomic.AddInt64(&rf.nextIndex[i], -1)
+					continue
+				}
+				return
+			}
+		}(i, *args)
+	}
+}
+
 func (rf *Raft) sendHeartBeat() {
 	args := &AppendEntriesArgs{
-		Term:     atomic.LoadInt64(&rf.currentTerm),
-		LeaderId: rf.me,
+		Type:         HEARTBEAT,
+		Term:         atomic.LoadInt64(&rf.currentTerm),
+		LeaderId:     rf.me,
+		PrevLogIndex: rf.getLogLength(),
+		PrevLogTerm:  rf.commitTerm,
+		LeaderCommit: rf.commitIndex,
 	}
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
@@ -236,13 +305,15 @@ func (rf *Raft) sendHeartBeat() {
 		go func(i int) {
 			reply := &AppendEntriesReply{}
 			if rf.peers[i].Call("Raft.AppendEntries", args, reply) {
-				rf.PortPrintf("Heartbeat to %d term %d", i, args.Term)
+				rf.PortPrintf("Heartbeat to %d term %d, ok", i, args.Term)
 			}
+			rf.PortPrintf("Heartbeat to %d term %d, failed", i, args.Term)
 		}(i)
 	}
 }
 
-func (rf *Raft) startElection(args *RequestVoteArgs) bool {
+func (rf *Raft) startElection() bool {
+	args := &RequestVoteArgs{}
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	args.CandidateId = rf.me
@@ -269,13 +340,11 @@ func (rf *Raft) startElection(args *RequestVoteArgs) bool {
 		}(i, &votes, &requests)
 	}
 	time.Sleep(3 * rf.heartbeatTimeout)
-	success := int(atomic.LoadInt32(&votes)) > len(rf.peers)/2
-	if success {
-		atomic.CompareAndSwapInt32(&rf.state, CANDIDATE, LEADER)
-		Assert(atomic.LoadInt32(&rf.state) == LEADER, "Wrong State")
+	if int(atomic.LoadInt32(&votes)) > len(rf.peers)/2 && atomic.CompareAndSwapInt32(&rf.state, CANDIDATE, LEADER) {
 		rf.PortPrintf("become the new leader")
+		return true
 	}
-	return success
+	return false
 }
 
 // The ticker go routine starts a new election if this peer hasn't received
@@ -291,19 +360,22 @@ func (rf *Raft) ticker() {
 			case <-time.After(rf.heartbeatTimeout):
 				rf.sendHeartBeat()
 			case <-rf.msgCh:
-				//TODO:append LOG item
 			}
 		}
 		if atomic.LoadInt32(&rf.state) != LEADER {
 			select {
 			case <-time.After(rf.electionTimeout):
 				rf.PortPrintf("lost connect with leader, term %d", atomic.LoadInt64(&rf.currentTerm))
-				args := &RequestVoteArgs{}
-				if success := rf.startElection(args); success {
+				if success := rf.startElection(); success {
+					logLength := rf.getLogLength()
+					for i := 0; i < len(rf.peers); i++ {
+						atomic.StoreInt64(&rf.nextIndex[i], int64(logLength))
+						atomic.StoreInt64(&rf.matchIndex[i], 0)
+					}
 					rf.sendHeartBeat()
+
 				}
 			case <-rf.msgCh:
-				//TODO:append LOG item
 			}
 		}
 
@@ -324,12 +396,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rand.Seed(time.Now().UnixNano())
 	rf := &Raft{}
 	rf.peers = peers
+	rf.nextIndex = make([]int64, len(peers))
+	rf.matchIndex = make([]int64, len(peers))
 	rf.persister = persister
 	rf.me = me
 	rf.applyCh = applyCh
 	rf.msgCh = make(chan LogEntrie)
-	rf.dead = 0
-	rf.currentTerm = 0
 	rf.votedFor = -1
 	rf.state = FOLLOWER
 	rf.heartbeatTimeout = 60 * time.Millisecond
