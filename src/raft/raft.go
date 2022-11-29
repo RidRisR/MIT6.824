@@ -182,7 +182,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 //		ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 //		return ok
 //	}
-//
+
 // **********************************************************************************
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -198,6 +198,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Your code here (2B).
+
 	isLeader := (atomic.LoadInt32(&rf.state) == LEADER)
 	term := atomic.LoadInt64(&rf.currentTerm)
 	if !isLeader {
@@ -218,12 +219,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // up CPU time, perhaps causing later tests to fail and generating
 // confusing debug output. any goroutine with a long-running loop
 // should call killed() to check whether it should stop.
-func (rf *Raft) getLogLength() int {
-	rf.logMu.Lock()
-	defer rf.logMu.Unlock()
-	return len(rf.log)
-}
-
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
@@ -234,16 +229,90 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+func (rf *Raft) leaderCommit() {
+	rf.logMu.Lock()
+	defer rf.logMu.Unlock()
+	if len(rf.log) == 0 {
+		return
+	}
+	for i := rf.commitIndex + 1; i < len(rf.log); i++ {
+		count := 1
+		for j := 0; j < len(rf.peers); j++ {
+			if j == rf.me {
+				continue
+			}
+			if int(atomic.LoadInt64(&rf.matchIndex[j])) >= i {
+				count++
+			}
+		}
+
+		if count <= len(rf.peers)/2 {
+			return
+		}
+
+		if rf.log[i].Term == rf.currentTerm {
+			rf.commitIndex = i
+			rf.PortPrintf("leader commit %d,count %d", rf.commitIndex, count)
+			rf.applyCh <- ApplyMsg{
+				CommandValid: true,
+				Command:      rf.log[i].Command,
+				CommandIndex: i + 1,
+			}
+		}
+	}
+}
+
+func (rf *Raft) getLogLength() int {
+	rf.logMu.Lock()
+	defer rf.logMu.Unlock()
+	return len(rf.log)
+}
+
+func (rf *Raft) sendAppendEntries(i int, args *AppendEntriesArgs) {
+	for {
+		reply := &AppendEntriesReply{}
+		nextIndex := atomic.LoadInt64(&rf.nextIndex[i])
+		if args.PrevLogIndex+1 >= int(nextIndex) {
+			args.Entries = rf.log[nextIndex:]
+		}
+		for !rf.peers[i].Call("Raft.AppendEntries", args, reply) {
+			rf.PortPrintf("Send log to %d term %d, failed", i, args.Term)
+			time.Sleep(10 * time.Millisecond)
+			if atomic.LoadInt32(&rf.state) != LEADER {
+				return
+			}
+		}
+		if reply.Accepted {
+			logLength := len(rf.log)
+			atomic.StoreInt64(&rf.nextIndex[i], int64(logLength))
+			atomic.StoreInt64(&rf.matchIndex[i], int64(logLength-1))
+			return
+		}
+		if args.Term == reply.Term && atomic.LoadInt64(&rf.nextIndex[i]) >= 0 {
+			atomic.AddInt64(&rf.nextIndex[i], -1)
+			args.PrevLogIndex = int(atomic.LoadInt64(&rf.nextIndex[i]) - 1)
+			continue
+		}
+		return
+	}
+}
+
 func (rf *Raft) sendLog(command interface{}) {
-	index := rf.getLogLength()
+	rf.logMu.Lock()
+	defer rf.logMu.Unlock()
+
+	if atomic.LoadInt32(&rf.state) != LEADER {
+		return
+	}
+	index := rf.getLogLength() - 1
 	newLog := LogEntrie{
 		Leader:  rf.me,
 		Term:    atomic.LoadInt64(&rf.currentTerm),
 		Command: command,
 	}
-	rf.logMu.Lock()
+
 	rf.log = append(rf.log, newLog)
-	rf.logMu.Unlock()
+
 	args := &AppendEntriesArgs{
 		Type:         LOG,
 		Term:         atomic.LoadInt64(&rf.currentTerm),
@@ -256,59 +325,44 @@ func (rf *Raft) sendLog(command interface{}) {
 		if i == rf.me {
 			continue
 		}
-		reply := &AppendEntriesReply{}
-		nextIndex := atomic.LoadInt64(&rf.nextIndex[i])
-		if args.PrevLogIndex+1 >= int(nextIndex) {
-			rf.logMu.Lock()
-			args.Entries = rf.log[nextIndex:]
-			rf.logMu.Unlock()
-		} else {
-			panic("Leader should have longer log")
-		}
-		go func(i int, args AppendEntriesArgs) {
-			for {
-				for !rf.peers[i].Call("Raft.AppendEntries", &args, reply) {
-					time.Sleep(rf.heartbeatTimeout)
-					if atomic.LoadInt32(&rf.state) != LEADER || atomic.LoadInt64(&rf.currentTerm) != args.Term {
-						return
-					}
-				}
-				if reply.Accepted {
-					logLength := rf.getLogLength()
-					atomic.StoreInt64(&rf.nextIndex[i], int64(logLength))
-					atomic.StoreInt64(&rf.matchIndex[i], int64(logLength-1))
-					return
-				}
-				if args.Term == reply.Term {
-					atomic.AddInt64(&rf.nextIndex[i], -1)
-					continue
-				}
-				return
-			}
-		}(i, *args)
+		go rf.sendAppendEntries(i, args)
 	}
 }
 
 func (rf *Raft) sendHeartBeat() {
+	if atomic.LoadInt32(&rf.state) != LEADER {
+		return
+	}
+	rf.leaderCommit()
 	args := &AppendEntriesArgs{
 		Type:         HEARTBEAT,
 		Term:         atomic.LoadInt64(&rf.currentTerm),
 		LeaderId:     rf.me,
-		PrevLogIndex: rf.getLogLength(),
+		PrevLogIndex: rf.getLogLength() - 1,
 		PrevLogTerm:  rf.commitTerm,
 		LeaderCommit: rf.commitIndex,
 	}
+	latestTerm := atomic.LoadInt64(&rf.currentTerm)
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
 		}
+		reply := &AppendEntriesReply{}
 		go func(i int) {
-			reply := &AppendEntriesReply{}
 			if rf.peers[i].Call("Raft.AppendEntries", args, reply) {
-				rf.PortPrintf("Heartbeat to %d term %d, ok", i, args.Term)
+				if reply.Term > atomic.LoadInt64(&latestTerm) {
+					atomic.StoreInt64(&latestTerm, reply.Term)
+				}
 			}
-			rf.PortPrintf("Heartbeat to %d term %d, failed", i, args.Term)
 		}(i)
+
+	}
+	time.Sleep(rf.heartbeatTimeout / 2)
+	if atomic.LoadInt64(&latestTerm) > atomic.LoadInt64(&rf.currentTerm) && atomic.LoadInt32(&rf.state) == LEADER {
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
+		atomic.StoreInt32(&rf.state, FOLLOWER)
+		atomic.StoreInt64(&rf.currentTerm, latestTerm)
 	}
 }
 
@@ -322,25 +376,35 @@ func (rf *Raft) startElection() bool {
 	currentTerm := atomic.AddInt64(&rf.currentTerm, 1)
 	rf.PortPrintf("start new election, term %d", currentTerm)
 	args.Term = currentTerm
+	rf.logMu.Lock()
+	args.LastLogIndex = len(rf.log) - 1
+	if args.LastLogIndex >= 0 {
+		args.LastLogTerm = rf.log[args.LastLogIndex].Term
+	}
+	rf.logMu.Unlock()
 	rf.votedFor = rf.me
 	var votes int32 = 1
-	var requests int32 = 1
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
 		}
-		go func(i int, votes *int32, requests *int32) {
+		go func(i int, votes *int32) {
 			reply := &RequestVoteReply{}
 			if rf.peers[i].Call("Raft.RequestVote", args, reply) {
 				if reply.VoteGranted {
 					atomic.AddInt32(votes, 1)
 				}
-				atomic.AddInt32(requests, 1)
 			}
-		}(i, &votes, &requests)
+		}(i, &votes)
 	}
-	time.Sleep(3 * rf.heartbeatTimeout)
+	time.Sleep(rf.heartbeatTimeout)
 	if int(atomic.LoadInt32(&votes)) > len(rf.peers)/2 && atomic.CompareAndSwapInt32(&rf.state, CANDIDATE, LEADER) {
+		logLength := rf.getLogLength()
+		for i := 0; i < len(rf.peers); i++ {
+			atomic.StoreInt64(&rf.nextIndex[i], int64(logLength))
+			atomic.StoreInt64(&rf.matchIndex[i], -1)
+		}
+		rf.sendHeartBeat()
 		rf.PortPrintf("become the new leader")
 		return true
 	}
@@ -365,16 +429,8 @@ func (rf *Raft) ticker() {
 		if atomic.LoadInt32(&rf.state) != LEADER {
 			select {
 			case <-time.After(rf.electionTimeout):
-				rf.PortPrintf("lost connect with leader, term %d", atomic.LoadInt64(&rf.currentTerm))
-				if success := rf.startElection(); success {
-					logLength := rf.getLogLength()
-					for i := 0; i < len(rf.peers); i++ {
-						atomic.StoreInt64(&rf.nextIndex[i], int64(logLength))
-						atomic.StoreInt64(&rf.matchIndex[i], 0)
-					}
-					rf.sendHeartBeat()
-
-				}
+				// rf.PortPrintf("lost connect with leader, term %d", atomic.LoadInt64(&rf.currentTerm))
+				rf.startElection()
 			case <-rf.msgCh:
 			}
 		}
@@ -398,6 +454,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.nextIndex = make([]int64, len(peers))
 	rf.matchIndex = make([]int64, len(peers))
+	rf.commitIndex = -1
 	rf.persister = persister
 	rf.me = me
 	rf.applyCh = applyCh
@@ -405,7 +462,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votedFor = -1
 	rf.state = FOLLOWER
 	rf.heartbeatTimeout = 60 * time.Millisecond
-	rf.electionTimeout = time.Duration(rand.Intn(500)+300) * time.Millisecond
+	rf.electionTimeout = time.Duration(rand.Intn(60*10)+60*5) * time.Millisecond
 
 	// Your initialization code here (2A, 2B, 2C).
 
