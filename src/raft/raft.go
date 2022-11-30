@@ -76,7 +76,6 @@ type Raft struct {
 
 	//volatile
 	commitIndex      int
-	commitTerm       int64
 	lastAppliedIndex int
 	msgCh            chan LogEntrie
 	applyCh          chan ApplyMsg
@@ -87,6 +86,10 @@ type Raft struct {
 	//volatile for leader
 	nextIndex  []int64
 	matchIndex []int64
+}
+
+func (rf *Raft) getLogLength() int {
+	return len(rf.log)
 }
 
 // return currentTerm and whether this server
@@ -183,33 +186,6 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 //		return ok
 //	}
 
-// **********************************************************************************
-// the service using Raft (e.g. a k/v server) wants to start
-// agreement on the next command to be appended to Raft's log. if this
-// server isn't the leader, returns false. otherwise start the
-// agreement and return immediately. there is no guarantee that this
-// command will ever be committed to the Raft log, since the leader
-// may fail or lose an election. even if the Raft instance has been killed,
-// this function should return gracefully.
-//
-// the first return value is the index that the command will appear at
-// if it's ever committed. the second return value is the current
-// term. the third return value is true if this server believes it is
-// the leader.
-func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	// Your code here (2B).
-
-	isLeader := (atomic.LoadInt32(&rf.state) == LEADER)
-	term := atomic.LoadInt64(&rf.currentTerm)
-	if !isLeader {
-		return -1, int(term), isLeader
-	}
-	index := rf.getLogLength() + 1
-	rf.sendLog(command)
-
-	return index, int(term), isLeader
-}
-
 // the tester doesn't halt goroutines created by Raft after each test,
 // but it does call the Kill() method. your code can use killed() to
 // check whether Kill() has been called. the use of atomic avoids the
@@ -230,12 +206,10 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) leaderCommit() {
-	rf.logMu.Lock()
-	defer rf.logMu.Unlock()
-	if len(rf.log) == 0 {
+	if rf.getLogLength() == 0 {
 		return
 	}
-	for i := rf.commitIndex + 1; i < len(rf.log); i++ {
+	for i := rf.commitIndex + 1; i < rf.getLogLength(); i++ {
 		count := 1
 		for j := 0; j < len(rf.peers); j++ {
 			if j == rf.me {
@@ -262,12 +236,6 @@ func (rf *Raft) leaderCommit() {
 	}
 }
 
-func (rf *Raft) getLogLength() int {
-	rf.logMu.Lock()
-	defer rf.logMu.Unlock()
-	return len(rf.log)
-}
-
 func (rf *Raft) sendAppendEntries(i int, args *AppendEntriesArgs) {
 	for {
 		reply := &AppendEntriesReply{}
@@ -283,7 +251,7 @@ func (rf *Raft) sendAppendEntries(i int, args *AppendEntriesArgs) {
 			}
 		}
 		if reply.Accepted {
-			logLength := len(rf.log)
+			logLength := rf.getLogLength()
 			atomic.StoreInt64(&rf.nextIndex[i], int64(logLength))
 			atomic.StoreInt64(&rf.matchIndex[i], int64(logLength-1))
 			return
@@ -291,36 +259,39 @@ func (rf *Raft) sendAppendEntries(i int, args *AppendEntriesArgs) {
 		if args.Term == reply.Term && atomic.LoadInt64(&rf.nextIndex[i]) >= 0 {
 			atomic.AddInt64(&rf.nextIndex[i], -1)
 			args.PrevLogIndex = int(atomic.LoadInt64(&rf.nextIndex[i]) - 1)
+			if args.PrevLogIndex >= 0 {
+				args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
+			} else {
+				args.PrevLogTerm = 0
+			}
 			continue
 		}
 		return
 	}
 }
 
-func (rf *Raft) sendLog(command interface{}) {
-	rf.logMu.Lock()
-	defer rf.logMu.Unlock()
-
+func (rf *Raft) appendLog(command interface{}) {
+	var prevTerm int64 = 0
+	if rf.getLogLength()-1 >= 0 {
+		prevTerm = rf.log[rf.getLogLength()-1].Term
+	}
 	if atomic.LoadInt32(&rf.state) != LEADER {
 		return
 	}
-	index := rf.getLogLength() - 1
 	newLog := LogEntrie{
 		Leader:  rf.me,
 		Term:    atomic.LoadInt64(&rf.currentTerm),
 		Command: command,
 	}
-
-	rf.log = append(rf.log, newLog)
-
 	args := &AppendEntriesArgs{
 		Type:         LOG,
 		Term:         atomic.LoadInt64(&rf.currentTerm),
 		LeaderId:     rf.me,
-		PrevLogIndex: index,
-		PrevLogTerm:  rf.commitTerm,
+		PrevLogIndex: rf.getLogLength() - 1,
+		PrevLogTerm:  prevTerm,
 		LeaderCommit: rf.commitIndex,
 	}
+	rf.log = append(rf.log, newLog)
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
@@ -334,12 +305,16 @@ func (rf *Raft) sendHeartBeat() {
 		return
 	}
 	rf.leaderCommit()
+	var prevTerm int64 = 0
+	if rf.getLogLength()-1 >= 0 {
+		prevTerm = rf.log[rf.getLogLength()-1].Term
+	}
 	args := &AppendEntriesArgs{
 		Type:         HEARTBEAT,
 		Term:         atomic.LoadInt64(&rf.currentTerm),
 		LeaderId:     rf.me,
 		PrevLogIndex: rf.getLogLength() - 1,
-		PrevLogTerm:  rf.commitTerm,
+		PrevLogTerm:  prevTerm,
 		LeaderCommit: rf.commitIndex,
 	}
 	latestTerm := atomic.LoadInt64(&rf.currentTerm)
@@ -359,29 +334,25 @@ func (rf *Raft) sendHeartBeat() {
 	}
 	time.Sleep(rf.heartbeatTimeout / 2)
 	if atomic.LoadInt64(&latestTerm) > atomic.LoadInt64(&rf.currentTerm) && atomic.LoadInt32(&rf.state) == LEADER {
-		rf.mu.Lock()
-		defer rf.mu.Unlock()
 		atomic.StoreInt32(&rf.state, FOLLOWER)
 		atomic.StoreInt64(&rf.currentTerm, latestTerm)
 	}
 }
 
 func (rf *Raft) startElection() bool {
-	args := &RequestVoteArgs{}
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	args := &RequestVoteArgs{}
 	args.CandidateId = rf.me
 	atomic.CompareAndSwapInt32(&rf.state, FOLLOWER, CANDIDATE)
 	Assert(atomic.LoadInt32(&rf.state) == CANDIDATE, "Wrong State")
 	currentTerm := atomic.AddInt64(&rf.currentTerm, 1)
 	rf.PortPrintf("start new election, term %d", currentTerm)
 	args.Term = currentTerm
-	rf.logMu.Lock()
-	args.LastLogIndex = len(rf.log) - 1
+	args.LastLogIndex = rf.getLogLength() - 1
 	if args.LastLogIndex >= 0 {
 		args.LastLogTerm = rf.log[args.LastLogIndex].Term
 	}
-	rf.logMu.Unlock()
 	rf.votedFor = rf.me
 	var votes int32 = 1
 	for i := 0; i < len(rf.peers); i++ {
@@ -404,11 +375,39 @@ func (rf *Raft) startElection() bool {
 			atomic.StoreInt64(&rf.nextIndex[i], int64(logLength))
 			atomic.StoreInt64(&rf.matchIndex[i], -1)
 		}
-		rf.sendHeartBeat()
 		rf.PortPrintf("become the new leader")
+
 		return true
 	}
 	return false
+}
+
+// the service using Raft (e.g. a k/v server) wants to start
+// agreement on the next command to be appended to Raft's log. if this
+// server isn't the leader, returns false. otherwise start the
+// agreement and return immediately. there is no guarantee that this
+// command will ever be committed to the Raft log, since the leader
+// may fail or lose an election. even if the Raft instance has been killed,
+// this function should return gracefully.
+//
+// the first return value is the index that the command will appear at
+// if it's ever committed. the second return value is the current
+// term. the third return value is true if this server believes it is
+// the leader.
+func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	// Your code here (2B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	isLeader := (atomic.LoadInt32(&rf.state) == LEADER)
+	term := atomic.LoadInt64(&rf.currentTerm)
+	if !isLeader {
+		return -1, int(term), isLeader
+	}
+
+	index := rf.getLogLength()
+	rf.appendLog(command)
+	//tester index start from 1
+	return index + 1, int(term), isLeader
 }
 
 // The ticker go routine starts a new election if this peer hasn't received
@@ -420,17 +419,18 @@ func (rf *Raft) ticker() {
 		// be started and to randomize sleeping time using
 		// time.Sleep().
 		if atomic.LoadInt32(&rf.state) == LEADER {
-			select {
-			case <-time.After(rf.heartbeatTimeout):
-				rf.sendHeartBeat()
-			case <-rf.msgCh:
-			}
+			time.Sleep(rf.heartbeatTimeout)
+			rf.mu.Lock()
+			rf.sendHeartBeat()
+			rf.mu.Unlock()
 		}
 		if atomic.LoadInt32(&rf.state) != LEADER {
 			select {
 			case <-time.After(rf.electionTimeout):
 				// rf.PortPrintf("lost connect with leader, term %d", atomic.LoadInt64(&rf.currentTerm))
-				rf.startElection()
+				if rf.startElection() {
+					rf.sendHeartBeat()
+				}
 			case <-rf.msgCh:
 			}
 		}

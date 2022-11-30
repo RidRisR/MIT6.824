@@ -577,7 +577,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 				index1, _, ok := rf.Start(cmd)
 				if ok {
 					index = index1
-					log.Printf("tester expect %d", index1-1)
+					log.Printf("tester expect %d(%d)", index1, index1-1)
 					break
 				}
 			}

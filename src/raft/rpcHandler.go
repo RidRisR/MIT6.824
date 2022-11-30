@@ -61,22 +61,22 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.PortPrintf("have voted to %d", rf.votedFor)
 		return
 	}
-
-	if rf.commitIndex > args.LastLogIndex || rf.commitTerm > args.LastLogTerm {
-		return
+	if rf.commitIndex >= 0 {
+		if rf.commitIndex > args.LastLogIndex || rf.log[rf.commitIndex].Term > args.LastLogTerm {
+			rf.PortPrintf("not latest log")
+			return
+		}
 	}
 
 	rf.votedFor = args.CandidateId
 	reply.VoteGranted = true
-	rf.PortPrintf("vote to %d", rf.votedFor)
+	// rf.PortPrintf("vote to %d", rf.votedFor)
 	go rf.resetTimer()
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	rf.logMu.Lock()
-	defer rf.logMu.Unlock()
 	reply.Term = atomic.LoadInt64(&rf.currentTerm)
 	reply.Accepted = false
 	//1. Reply false if term < currentTerm (§5.1)
@@ -93,22 +93,22 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	if (len(rf.log)) < args.PrevLogIndex+1 {
-		rf.PortPrintf("wrong index %d>%d", args.PrevLogIndex+1, len(rf.log))
+	if (rf.getLogLength())-1 < args.PrevLogIndex {
+		rf.PortPrintf("wrong index %d>%d", args.PrevLogIndex, rf.getLogLength()-1)
 		return
 	}
 
 	if args.PrevLogIndex >= 0 && rf.log[args.PrevLogIndex].Term > args.Term {
-		rf.PortPrintf("wrong log %d,%d", args.Term, rf.log[args.PrevLogIndex].Term)
+		rf.PortPrintf("wrong log term %d,%d", args.Term, rf.log[args.PrevLogIndex].Term)
 		return
 	}
 
 	atomic.StoreInt32(&rf.state, FOLLOWER)
 	go rf.resetTimer()
 
-	if (len(rf.log)) > (args.PrevLogIndex+1) && rf.log[args.PrevLogIndex+1].Term != args.Term {
-		if args.PrevLogIndex > 0 {
-			rf.log = rf.log[:args.PrevLogIndex]
+	if (rf.getLogLength()) > (args.PrevLogIndex+1) && rf.log[args.PrevLogIndex+1].Term != args.Term {
+		if args.PrevLogIndex >= 0 {
+			rf.log = rf.log[:args.PrevLogIndex+1]
 		} else {
 			rf.log = rf.log[:0]
 		}
@@ -118,6 +118,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Type == LOG {
 		rf.log = append(rf.log, args.Entries...)
 	}
+
 	rf.updateCommit(args)
 	reply.Accepted = true
 }
@@ -127,18 +128,18 @@ func (rf *Raft) updateCommit(args *AppendEntriesArgs) {
 		return
 	}
 
-	commitTo := rf.commitIndex
-	if len(rf.log)-1 < args.LeaderCommit {
-		commitTo = len(rf.log)
+	var commitTo int
+	if rf.getLogLength()-1 < args.LeaderCommit {
+		commitTo = rf.getLogLength() - 1
 	} else {
 		commitTo = args.LeaderCommit
 	}
 	for i := rf.commitIndex + 1; i < commitTo+1; i++ {
 		rf.PortPrintf("comit:%d", i)
-		go func(i int, v LogEntrie) {
+		go func(i int, log LogEntrie) {
 			rf.applyCh <- ApplyMsg{
 				CommandValid: true,
-				Command:      v.Command,
+				Command:      log.Command,
 				CommandIndex: i + 1,
 			}
 		}(i, rf.log[i])
