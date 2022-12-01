@@ -254,9 +254,7 @@ func (rf *Raft) sendAppendEntries(i int, latestTerm *int64) {
 		args.PrevLogTerm = rf.log.get(args.PrevLogIndex).Term
 	}
 	reply := &AppendEntriesReply{}
-	rf.PortPrintf(" %d type:%s,prevIndex:%d", i, args.Type, args.PrevLogIndex)
 	rf.peers[i].Call("Raft.AppendEntries", args, reply)
-	rf.PortPrintf("previndex :%d", args.PrevLogIndex)
 	if reply.Accepted {
 		logLength := rf.getLogLen()
 		atomic.StoreInt64(&rf.nextIndex[i], int64(logLength))

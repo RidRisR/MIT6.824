@@ -94,7 +94,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// rf.PortPrintf("wrong term %d,%d", args.Term, reply.Term)
 		return
 	}
-	rf.PortPrintf("recieve %d,%d,%d", args.LeaderId, args.PrevLogIndex, args.PrevLogTerm)
 
 	if (rf.getLogLen())-1 < args.PrevLogIndex {
 		rf.PortPrintf("wrong index %d>%d", args.PrevLogIndex, rf.getLogLen()-1)
