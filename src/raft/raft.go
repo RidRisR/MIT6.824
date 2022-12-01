@@ -60,8 +60,7 @@ type ApplyMsg struct {
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
-	mu        sync.Mutex // Lock to protect shared access to this peer's state
-	logMu     sync.Mutex
+	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
@@ -72,7 +71,7 @@ type Raft struct {
 	// state a Raft server must maintain.
 	currentTerm int64
 	votedFor    int
-	log         []LogEntrie
+	log         Log
 
 	//volatile
 	commitIndex      int
@@ -88,8 +87,8 @@ type Raft struct {
 	matchIndex []int64
 }
 
-func (rf *Raft) getLogLength() int {
-	return len(rf.log)
+func (rf *Raft) getLogLen() int {
+	return rf.log.logLen()
 }
 
 // return currentTerm and whether this server
@@ -206,97 +205,69 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) leaderCommit() {
-	if rf.getLogLength() == 0 {
+	if rf.getLogLen() == 0 {
 		return
 	}
-	for i := rf.commitIndex + 1; i < rf.getLogLength(); i++ {
-		count := 1
+	var toCommit []LogEntrie
+	for _, log := range rf.log.slice(rf.commitIndex+1, -1) {
+		var count []int
 		for j := 0; j < len(rf.peers); j++ {
 			if j == rf.me {
+				count = append(count, j)
 				continue
 			}
-			if int(atomic.LoadInt64(&rf.matchIndex[j])) >= i {
-				count++
+			if int(atomic.LoadInt64(&rf.matchIndex[j])) >= log.Index {
+				count = append(count, j)
 			}
 		}
-
-		if count <= len(rf.peers)/2 {
+		if len(count) <= len(rf.peers)/2 {
 			return
 		}
-
-		if rf.log[i].Term == rf.currentTerm {
-			rf.commitIndex = i
-			rf.PortPrintf("leader commit %d,count %d", rf.commitIndex, count)
-			rf.applyCh <- ApplyMsg{
-				CommandValid: true,
-				Command:      rf.log[i].Command,
-				CommandIndex: i + 1,
+		// rf.PortPrintf("for (%d)%v, %v agree", i, log.Command, count)
+		toCommit = append(toCommit, log)
+		if log.Term == rf.currentTerm {
+			rf.commitIndex = log.Index
+			for _, log := range toCommit {
+				go rf.apply(true, log.Command, log.Index)
+				rf.PortPrintf("leader commit: %d,%v", log.Index, log.Command)
 			}
+			toCommit = toCommit[:0]
 		}
 	}
 }
 
-func (rf *Raft) sendAppendEntries(i int, args *AppendEntriesArgs) {
-	for {
-		reply := &AppendEntriesReply{}
-		nextIndex := atomic.LoadInt64(&rf.nextIndex[i])
-		if args.PrevLogIndex+1 >= int(nextIndex) {
-			args.Entries = rf.log[nextIndex:]
-		}
-		for !rf.peers[i].Call("Raft.AppendEntries", args, reply) {
-			rf.PortPrintf("Send log to %d term %d, failed", i, args.Term)
-			time.Sleep(10 * time.Millisecond)
-			if atomic.LoadInt32(&rf.state) != LEADER {
-				return
-			}
-		}
-		if reply.Accepted {
-			logLength := rf.getLogLength()
-			atomic.StoreInt64(&rf.nextIndex[i], int64(logLength))
-			atomic.StoreInt64(&rf.matchIndex[i], int64(logLength-1))
-			return
-		}
-		if args.Term == reply.Term && atomic.LoadInt64(&rf.nextIndex[i]) >= 0 {
-			atomic.AddInt64(&rf.nextIndex[i], -1)
-			args.PrevLogIndex = int(atomic.LoadInt64(&rf.nextIndex[i]) - 1)
-			if args.PrevLogIndex >= 0 {
-				args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
-			} else {
-				args.PrevLogTerm = 0
-			}
-			continue
-		}
-		return
-	}
-}
-
-func (rf *Raft) appendLog(command interface{}) {
-	var prevTerm int64 = 0
-	if rf.getLogLength()-1 >= 0 {
-		prevTerm = rf.log[rf.getLogLength()-1].Term
-	}
-	if atomic.LoadInt32(&rf.state) != LEADER {
-		return
-	}
-	newLog := LogEntrie{
-		Leader:  rf.me,
-		Term:    atomic.LoadInt64(&rf.currentTerm),
-		Command: command,
-	}
+func (rf *Raft) sendAppendEntries(i int, latestTerm *int64) {
 	args := &AppendEntriesArgs{
-		Type:         LOG,
+		Type:         HEARTBEAT,
 		Term:         atomic.LoadInt64(&rf.currentTerm),
 		LeaderId:     rf.me,
-		PrevLogIndex: rf.getLogLength() - 1,
-		PrevLogTerm:  prevTerm,
 		LeaderCommit: rf.commitIndex,
+		PrevLogIndex: rf.getLogLen() - 1,
 	}
-	rf.log = append(rf.log, newLog)
-	for i := 0; i < len(rf.peers); i++ {
-		if i == rf.me {
-			continue
-		}
-		go rf.sendAppendEntries(i, args)
+	nextIndex := atomic.LoadInt64(&rf.nextIndex[i])
+	if rf.getLogLen()-1 >= int(nextIndex) {
+		args.Type = LOG
+		args.Entries = rf.log.slice(int(nextIndex), -1)
+		args.PrevLogIndex = int(nextIndex) - 1
+	}
+	if args.PrevLogIndex >= 0 {
+		args.PrevLogTerm = rf.log.get(args.PrevLogIndex).Term
+	}
+	reply := &AppendEntriesReply{}
+	rf.PortPrintf(" %d type:%s,prevIndex:%d", i, args.Type, args.PrevLogIndex)
+	rf.peers[i].Call("Raft.AppendEntries", args, reply)
+	rf.PortPrintf("previndex :%d", args.PrevLogIndex)
+	if reply.Accepted {
+		logLength := rf.getLogLen()
+		atomic.StoreInt64(&rf.nextIndex[i], int64(logLength))
+		atomic.StoreInt64(&rf.matchIndex[i], int64(logLength-1))
+		return
+	}
+	if args.Term == reply.Term && atomic.LoadInt64(&rf.nextIndex[i]) > 0 {
+		atomic.AddInt64(&rf.nextIndex[i], -1)
+	}
+	if reply.Term > atomic.LoadInt64(latestTerm) {
+		atomic.StoreInt64(latestTerm, reply.Term)
 	}
 }
 
@@ -305,34 +276,15 @@ func (rf *Raft) sendHeartBeat() {
 		return
 	}
 	rf.leaderCommit()
-	var prevTerm int64 = 0
-	if rf.getLogLength()-1 >= 0 {
-		prevTerm = rf.log[rf.getLogLength()-1].Term
-	}
-	args := &AppendEntriesArgs{
-		Type:         HEARTBEAT,
-		Term:         atomic.LoadInt64(&rf.currentTerm),
-		LeaderId:     rf.me,
-		PrevLogIndex: rf.getLogLength() - 1,
-		PrevLogTerm:  prevTerm,
-		LeaderCommit: rf.commitIndex,
-	}
 	latestTerm := atomic.LoadInt64(&rf.currentTerm)
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
 		}
-		reply := &AppendEntriesReply{}
-		go func(i int) {
-			if rf.peers[i].Call("Raft.AppendEntries", args, reply) {
-				if reply.Term > atomic.LoadInt64(&latestTerm) {
-					atomic.StoreInt64(&latestTerm, reply.Term)
-				}
-			}
-		}(i)
+		go rf.sendAppendEntries(i, &latestTerm)
 
 	}
-	time.Sleep(rf.heartbeatTimeout / 2)
+	time.Sleep(rf.heartbeatTimeout / 3)
 	if atomic.LoadInt64(&latestTerm) > atomic.LoadInt64(&rf.currentTerm) && atomic.LoadInt32(&rf.state) == LEADER {
 		atomic.StoreInt32(&rf.state, FOLLOWER)
 		atomic.StoreInt64(&rf.currentTerm, latestTerm)
@@ -340,18 +292,16 @@ func (rf *Raft) sendHeartBeat() {
 }
 
 func (rf *Raft) startElection() bool {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	args := &RequestVoteArgs{}
 	args.CandidateId = rf.me
 	atomic.CompareAndSwapInt32(&rf.state, FOLLOWER, CANDIDATE)
 	Assert(atomic.LoadInt32(&rf.state) == CANDIDATE, "Wrong State")
 	currentTerm := atomic.AddInt64(&rf.currentTerm, 1)
-	rf.PortPrintf("start new election, term %d", currentTerm)
+	rf.PortPrintf("new election, term %d", currentTerm)
 	args.Term = currentTerm
-	args.LastLogIndex = rf.getLogLength() - 1
+	args.LastLogIndex = rf.getLogLen() - 1
 	if args.LastLogIndex >= 0 {
-		args.LastLogTerm = rf.log[args.LastLogIndex].Term
+		args.LastLogTerm = rf.log.get(args.LastLogIndex).Term
 	}
 	rf.votedFor = rf.me
 	var votes int32 = 1
@@ -370,7 +320,7 @@ func (rf *Raft) startElection() bool {
 	}
 	time.Sleep(rf.heartbeatTimeout)
 	if int(atomic.LoadInt32(&votes)) > len(rf.peers)/2 && atomic.CompareAndSwapInt32(&rf.state, CANDIDATE, LEADER) {
-		logLength := rf.getLogLength()
+		logLength := rf.getLogLen()
 		for i := 0; i < len(rf.peers); i++ {
 			atomic.StoreInt64(&rf.nextIndex[i], int64(logLength))
 			atomic.StoreInt64(&rf.matchIndex[i], -1)
@@ -403,9 +353,17 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if !isLeader {
 		return -1, int(term), isLeader
 	}
-
-	index := rf.getLogLength()
-	rf.appendLog(command)
+	index := rf.getLogLen()
+	newLog := LogEntrie{
+		Index:   index,
+		Term:    atomic.LoadInt64(&rf.currentTerm),
+		Command: command,
+	}
+	rf.log.append([]LogEntrie{newLog})
+	if rf.getLogLen() != newLog.Index+1 {
+		panic("append error")
+	}
+	rf.PortPrintf("start %d", index)
 	//tester index start from 1
 	return index + 1, int(term), isLeader
 }
@@ -428,9 +386,11 @@ func (rf *Raft) ticker() {
 			select {
 			case <-time.After(rf.electionTimeout):
 				// rf.PortPrintf("lost connect with leader, term %d", atomic.LoadInt64(&rf.currentTerm))
+				rf.mu.Lock()
 				if rf.startElection() {
 					rf.sendHeartBeat()
 				}
+				rf.mu.Unlock()
 			case <-rf.msgCh:
 			}
 		}
@@ -461,8 +421,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.msgCh = make(chan LogEntrie)
 	rf.votedFor = -1
 	rf.state = FOLLOWER
-	rf.heartbeatTimeout = 60 * time.Millisecond
-	rf.electionTimeout = time.Duration(rand.Intn(60*10)+60*5) * time.Millisecond
+	rf.heartbeatTimeout = 100 * time.Millisecond
+	rf.electionTimeout = time.Duration(rand.Intn(100*10)+100*5) * time.Millisecond
 
 	// Your initialization code here (2A, 2B, 2C).
 

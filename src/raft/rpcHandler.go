@@ -1,6 +1,8 @@
 package raft
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+)
 
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
@@ -36,7 +38,7 @@ type AppendEntriesReply struct {
 }
 
 type LogEntrie struct {
-	Leader  int
+	Index   int
 	Term    int64
 	Command interface{}
 }
@@ -62,7 +64,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 	if rf.commitIndex >= 0 {
-		if rf.commitIndex > args.LastLogIndex || rf.log[rf.commitIndex].Term > args.LastLogTerm {
+		if rf.commitIndex > args.LastLogIndex || rf.log.get(rf.commitIndex).Term > args.LastLogTerm {
 			rf.PortPrintf("not latest log")
 			return
 		}
@@ -92,31 +94,32 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// rf.PortPrintf("wrong term %d,%d", args.Term, reply.Term)
 		return
 	}
+	rf.PortPrintf("recieve %d,%d,%d", args.LeaderId, args.PrevLogIndex, args.PrevLogTerm)
 
-	if (rf.getLogLength())-1 < args.PrevLogIndex {
-		rf.PortPrintf("wrong index %d>%d", args.PrevLogIndex, rf.getLogLength()-1)
+	if (rf.getLogLen())-1 < args.PrevLogIndex {
+		rf.PortPrintf("wrong index %d>%d", args.PrevLogIndex, rf.getLogLen()-1)
 		return
 	}
 
-	if args.PrevLogIndex >= 0 && rf.log[args.PrevLogIndex].Term > args.Term {
-		rf.PortPrintf("wrong log term %d,%d", args.Term, rf.log[args.PrevLogIndex].Term)
+	if args.PrevLogIndex >= 0 && rf.log.get(args.PrevLogIndex).Term != args.PrevLogTerm {
+		rf.PortPrintf("wrong log term %d,%d,%d", args.PrevLogIndex, args.PrevLogTerm, rf.log.get(args.PrevLogIndex).Term)
 		return
 	}
 
 	atomic.StoreInt32(&rf.state, FOLLOWER)
 	go rf.resetTimer()
 
-	if (rf.getLogLength()) > (args.PrevLogIndex+1) && rf.log[args.PrevLogIndex+1].Term != args.Term {
+	if (rf.getLogLen()) > (args.PrevLogIndex+1) && rf.log.get(args.PrevLogIndex+1).Term != args.Term {
 		if args.PrevLogIndex >= 0 {
-			rf.log = rf.log[:args.PrevLogIndex+1]
+			rf.log.removeTo(args.PrevLogIndex + 1)
 		} else {
-			rf.log = rf.log[:0]
+			rf.log.removeTo(0)
 		}
 
 	}
 
 	if args.Type == LOG {
-		rf.log = append(rf.log, args.Entries...)
+		rf.log.append(args.Entries)
 	}
 
 	rf.updateCommit(args)
@@ -129,24 +132,26 @@ func (rf *Raft) updateCommit(args *AppendEntriesArgs) {
 	}
 
 	var commitTo int
-	if rf.getLogLength()-1 < args.LeaderCommit {
-		commitTo = rf.getLogLength() - 1
+	if rf.getLogLen()-1 < args.LeaderCommit {
+		commitTo = rf.getLogLen() - 1
 	} else {
 		commitTo = args.LeaderCommit
 	}
-	for i := rf.commitIndex + 1; i < commitTo+1; i++ {
-		rf.PortPrintf("comit:%d", i)
-		go func(i int, log LogEntrie) {
-			rf.applyCh <- ApplyMsg{
-				CommandValid: true,
-				Command:      log.Command,
-				CommandIndex: i + 1,
-			}
-		}(i, rf.log[i])
+	for _, log := range rf.log.slice(rf.commitIndex+1, commitTo+1) {
+		rf.PortPrintf("commit: %d,%v", log.Index, log.Command)
+		go rf.apply(true, log.Command, log.Index)
 	}
 	rf.commitIndex = commitTo
 }
 
 func (rf *Raft) resetTimer() {
 	rf.msgCh <- LogEntrie{}
+}
+
+func (rf *Raft) apply(valid bool, command interface{}, index int) {
+	rf.applyCh <- ApplyMsg{
+		CommandValid: valid,
+		Command:      command,
+		CommandIndex: index + 1,
+	}
 }
