@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"errors"
 	"sync"
 )
 
@@ -19,23 +20,17 @@ func (l *Log) append(logs []LogEntrie) {
 			l.len++
 		}
 	}
-	if l.len != len(l.data) {
-		panic("length error")
-	}
 }
 
-func (l *Log) cutTo(index int) bool {
+func (l *Log) cutTo(index int) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if index < 0 || l.len < index {
-		return false
+		return errors.New("illegal index")
 	}
 	l.data = l.data[:index]
 	l.len = index
-	if l.len != len(l.data) {
-		panic("length error")
-	}
-	return true
+	return nil
 }
 
 func (l *Log) slice(start int, end int) []LogEntrie {

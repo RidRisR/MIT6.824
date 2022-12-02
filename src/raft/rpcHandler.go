@@ -49,7 +49,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	reply.VoteGranted = false
-	reply.Term = atomic.LoadInt64(&rf.currentTerm)
+	reply.Term = rf.currentTerm
 	if args.Term < reply.Term {
 		rf.PortPrintf("%d lower term", args.CandidateId)
 		return
@@ -79,7 +79,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	reply.Term = atomic.LoadInt64(&rf.currentTerm)
+	reply.Term = rf.currentTerm
 	reply.Accepted = false
 	//1. Reply false if term < currentTerm (§5.1)
 	//2. Reply false if log doesn’t contain an entry at prevLogIndex
@@ -109,12 +109,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	if (rf.getLogLen()) > (args.PrevLogIndex+1) && rf.log.get(args.PrevLogIndex+1).Term != args.Term {
+		var err error
 		if args.PrevLogIndex >= 0 {
-			rf.log.cutTo(args.PrevLogIndex + 1)
+			err = rf.log.cutTo(args.PrevLogIndex + 1)
 		} else {
-			rf.log.cutTo(0)
+			err = rf.log.cutTo(0)
 		}
-
+		if err != nil {
+			panic(err.Error())
+		}
 	}
 
 	if args.Type == LOG {
@@ -138,7 +141,7 @@ func (rf *Raft) updateCommit(args *AppendEntriesArgs) {
 	}
 	go func(start int, end int) {
 		for _, log := range rf.log.slice(start, end) {
-			rf.PortPrintf("commit: %d,%v", log.Index, log.Command)
+			rf.PortPrintf("commit: %d", log.Index)
 			rf.apply(true, log.Command, log.Index)
 		}
 	}(rf.commitIndex+1, commitTo+1)
