@@ -95,6 +95,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
+	atomic.StoreInt32(&rf.state, FOLLOWER)
+	go rf.resetTimer()
+
 	if (rf.getLogLen())-1 < args.PrevLogIndex {
 		rf.PortPrintf("wrong index %d>%d", args.PrevLogIndex, rf.getLogLen()-1)
 		return
@@ -105,14 +108,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	atomic.StoreInt32(&rf.state, FOLLOWER)
-	go rf.resetTimer()
-
 	if (rf.getLogLen()) > (args.PrevLogIndex+1) && rf.log.get(args.PrevLogIndex+1).Term != args.Term {
 		if args.PrevLogIndex >= 0 {
-			rf.log.removeTo(args.PrevLogIndex + 1)
+			rf.log.cutTo(args.PrevLogIndex + 1)
 		} else {
-			rf.log.removeTo(0)
+			rf.log.cutTo(0)
 		}
 
 	}
@@ -136,10 +136,12 @@ func (rf *Raft) updateCommit(args *AppendEntriesArgs) {
 	} else {
 		commitTo = args.LeaderCommit
 	}
-	for _, log := range rf.log.slice(rf.commitIndex+1, commitTo+1) {
-		rf.PortPrintf("commit: %d,%v", log.Index, log.Command)
-		go rf.apply(true, log.Command, log.Index)
-	}
+	go func(start int, end int) {
+		for _, log := range rf.log.slice(start, end) {
+			rf.PortPrintf("commit: %d,%v", log.Index, log.Command)
+			rf.apply(true, log.Command, log.Index)
+		}
+	}(rf.commitIndex+1, commitTo+1)
 	rf.commitIndex = commitTo
 }
 

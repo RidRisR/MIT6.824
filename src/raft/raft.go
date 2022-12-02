@@ -29,12 +29,13 @@ import (
 )
 
 const (
-	LEADER    int32 = 0
-	FOLLOWER  int32 = 1
-	CANDIDATE int32 = 2
-	HEARTBEAT       = "HTBT"
-	VOTE            = "VOTE"
-	LOG             = "LOG"
+	heartbeatConst       = 60
+	LEADER         int32 = 0
+	FOLLOWER       int32 = 1
+	CANDIDATE      int32 = 2
+	HEARTBEAT            = "HTBT"
+	VOTE                 = "VOTE"
+	LOG                  = "LOG"
 )
 
 // as each Raft peer becomes aware that successive log entries are
@@ -179,11 +180,21 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // capitalized all field names in structs passed over RPC, and
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
-//
-//	func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-//		ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-//		return ok
-//	}
+func (rf *Raft) sendRequestVote(server int, reply *RequestVoteReply, votes *int32) {
+	args := &RequestVoteArgs{
+		CandidateId:  rf.me,
+		Term:         atomic.LoadInt64(&rf.currentTerm),
+		LastLogIndex: rf.getLogLen() - 1,
+	}
+	if args.LastLogIndex >= 0 {
+		args.LastLogTerm = rf.log.get(args.LastLogIndex).Term
+	}
+	if rf.peers[server].Call("Raft.RequestVote", args, reply) {
+		if reply.VoteGranted {
+			atomic.AddInt32(votes, 1)
+		}
+	}
+}
 
 // the tester doesn't halt goroutines created by Raft after each test,
 // but it does call the Kill() method. your code can use killed() to
@@ -208,8 +219,10 @@ func (rf *Raft) leaderCommit() {
 	if rf.getLogLen() == 0 {
 		return
 	}
-	var toCommit []LogEntrie
-	for _, log := range rf.log.slice(rf.commitIndex+1, -1) {
+
+	uncommitted := rf.log.slice(rf.commitIndex+1, -1)
+	toCommit := [2]int{0, 0}
+	for i, log := range uncommitted {
 		var count []int
 		for j := 0; j < len(rf.peers); j++ {
 			if j == rf.me {
@@ -223,20 +236,23 @@ func (rf *Raft) leaderCommit() {
 		if len(count) <= len(rf.peers)/2 {
 			return
 		}
-		// rf.PortPrintf("for (%d)%v, %v agree", i, log.Command, count)
-		toCommit = append(toCommit, log)
+		toCommit[1]++
 		if log.Term == rf.currentTerm {
 			rf.commitIndex = log.Index
-			for _, log := range toCommit {
-				go rf.apply(true, log.Command, log.Index)
-				rf.PortPrintf("leader commit: %d,%v", log.Index, log.Command)
-			}
-			toCommit = toCommit[:0]
+			go func(start int, num int) {
+				for _, log := range uncommitted[start : start+num] {
+					rf.PortPrintf("toCommit :%d", log.Index)
+					rf.apply(true, log.Command, log.Index)
+					rf.PortPrintf("leader commit: %d,%v", log.Index, log.Command)
+				}
+			}(toCommit[0], toCommit[1])
+			toCommit[0] = i + 1
+			toCommit[1] = 0
 		}
 	}
 }
 
-func (rf *Raft) sendAppendEntries(i int, latestTerm *int64) {
+func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *int64) {
 	args := &AppendEntriesArgs{
 		Type:         HEARTBEAT,
 		Term:         atomic.LoadInt64(&rf.currentTerm),
@@ -253,7 +269,6 @@ func (rf *Raft) sendAppendEntries(i int, latestTerm *int64) {
 	if args.PrevLogIndex >= 0 {
 		args.PrevLogTerm = rf.log.get(args.PrevLogIndex).Term
 	}
-	reply := &AppendEntriesReply{}
 	rf.peers[i].Call("Raft.AppendEntries", args, reply)
 	if reply.Accepted {
 		logLength := rf.getLogLen()
@@ -279,10 +294,10 @@ func (rf *Raft) sendHeartBeat() {
 		if i == rf.me {
 			continue
 		}
-		go rf.sendAppendEntries(i, &latestTerm)
+		go rf.sendAppendEntries(i, &AppendEntriesReply{}, &latestTerm)
 
 	}
-	time.Sleep(rf.heartbeatTimeout / 3)
+	time.Sleep(rf.heartbeatTimeout / 2)
 	if atomic.LoadInt64(&latestTerm) > atomic.LoadInt64(&rf.currentTerm) && atomic.LoadInt32(&rf.state) == LEADER {
 		atomic.StoreInt32(&rf.state, FOLLOWER)
 		atomic.StoreInt64(&rf.currentTerm, latestTerm)
@@ -290,33 +305,20 @@ func (rf *Raft) sendHeartBeat() {
 }
 
 func (rf *Raft) startElection() bool {
-	args := &RequestVoteArgs{}
-	args.CandidateId = rf.me
 	atomic.CompareAndSwapInt32(&rf.state, FOLLOWER, CANDIDATE)
 	Assert(atomic.LoadInt32(&rf.state) == CANDIDATE, "Wrong State")
-	currentTerm := atomic.AddInt64(&rf.currentTerm, 1)
-	rf.PortPrintf("new election, term %d", currentTerm)
-	args.Term = currentTerm
-	args.LastLogIndex = rf.getLogLen() - 1
-	if args.LastLogIndex >= 0 {
-		args.LastLogTerm = rf.log.get(args.LastLogIndex).Term
-	}
+	currTerm := atomic.AddInt64(&rf.currentTerm, 1)
 	rf.votedFor = rf.me
+	rf.PortPrintf("new election, term %d", currTerm)
+
 	var votes int32 = 1
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
 		}
-		go func(i int, votes *int32) {
-			reply := &RequestVoteReply{}
-			if rf.peers[i].Call("Raft.RequestVote", args, reply) {
-				if reply.VoteGranted {
-					atomic.AddInt32(votes, 1)
-				}
-			}
-		}(i, &votes)
+		go rf.sendRequestVote(i, &RequestVoteReply{}, &votes)
 	}
-	time.Sleep(rf.heartbeatTimeout)
+	time.Sleep(rf.heartbeatTimeout / 2)
 	if int(atomic.LoadInt32(&votes)) > len(rf.peers)/2 && atomic.CompareAndSwapInt32(&rf.state, CANDIDATE, LEADER) {
 		logLength := rf.getLogLen()
 		for i := 0; i < len(rf.peers); i++ {
@@ -419,14 +421,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.msgCh = make(chan LogEntrie)
 	rf.votedFor = -1
 	rf.state = FOLLOWER
-	rf.heartbeatTimeout = 100 * time.Millisecond
-	rf.electionTimeout = time.Duration(rand.Intn(100*10)+100*5) * time.Millisecond
+	rf.heartbeatTimeout = heartbeatConst * time.Millisecond
+	rf.electionTimeout = time.Duration(rand.Intn(heartbeatConst*10)+heartbeatConst*5) * time.Millisecond
 
 	// Your initialization code here (2A, 2B, 2C).
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-	rf.PortPrintf("port start")
+	rf.PortPrintf("port ready")
 
 	// start ticker goroutine to start elections
 	go rf.ticker()

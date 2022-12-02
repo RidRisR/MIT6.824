@@ -10,7 +10,7 @@ type Log struct {
 	len  int
 }
 
-func (l *Log) append(logs []LogEntrie) bool {
+func (l *Log) append(logs []LogEntrie) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for _, log := range logs {
@@ -19,11 +19,12 @@ func (l *Log) append(logs []LogEntrie) bool {
 			l.len++
 		}
 	}
-
-	return true
+	if l.len != len(l.data) {
+		panic("length error")
+	}
 }
 
-func (l *Log) removeTo(index int) bool {
+func (l *Log) cutTo(index int) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if index < 0 || l.len < index {
