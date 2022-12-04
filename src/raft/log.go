@@ -1,7 +1,6 @@
 package raft
 
 import (
-	"errors"
 	"sync"
 )
 
@@ -11,10 +10,9 @@ type Log struct {
 	len  int
 }
 
-func (l *Log) append(logs []LogEntrie) bool {
+func (l *Log) append(logs []LogEntrie) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	modified := false
 	for _, log := range logs {
 		if log.Index == l.len {
 			l.data = append(l.data, log)
@@ -27,21 +25,6 @@ func (l *Log) append(logs []LogEntrie) bool {
 			l.len = log.Index + 1
 		}
 	}
-	return modified
-}
-
-func (l *Log) cutTo(index int) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.len == 0 {
-		return nil
-	}
-	if index < 0 || l.len < index {
-		return errors.New("illegal index")
-	}
-	l.data = l.data[:index]
-	l.len = index
-	return nil
 }
 
 func (l *Log) slice(start int, end int) []LogEntrie {
@@ -91,6 +74,21 @@ func (l *Log) logLen() int {
 	return l.len
 }
 
+// unused
+// func (l *Log) cutTo(index int) error {
+// 	l.mu.Lock()
+// 	defer l.mu.Unlock()
+// 	if l.len == 0 {
+// 		return nil
+// 	}
+// 	if index < 0 || l.len < index {
+// 		return errors.New("illegal index")
+// 	}
+// 	l.data = l.data[:index]
+// 	l.len = index
+// 	return nil
+// }
+
 //wrapper functions
 
 func (rf *Raft) logGetLen() int {
@@ -106,19 +104,19 @@ func (rf *Raft) logGetItem(index int) LogEntrie {
 }
 
 func (rf *Raft) logAppend(logs []LogEntrie) {
-	if rf.log.append(logs) {
-		rf.persist()
-	}
-}
-
-func (rf *Raft) logCutTo(index int) {
-	if err := rf.log.cutTo(index); err != nil {
-		rf.PortPrintf(err.Error())
-	} else {
-		rf.persist()
-	}
+	rf.log.append(logs)
+	rf.persist()
 }
 
 func (rf *Raft) getLastConsensus(index int, term int64) (lastIndex int, lastTerm int64) {
 	return rf.log.getLastConsensus(index, term)
 }
+
+// unused
+// func (rf *Raft) logCutTo(index int) {
+// 	if err := rf.log.cutTo(index); err != nil {
+// 		rf.PortPrintf(err.Error())
+// 	} else {
+// 		rf.persist()
+// 	}
+// }

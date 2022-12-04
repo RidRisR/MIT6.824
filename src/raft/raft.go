@@ -219,9 +219,9 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) leaderCommit() {
+func (rf *Raft) leaderCommit() int {
 	if rf.logGetLen() == 0 {
-		return
+		return 0
 	}
 	uncommitted := rf.logSlice(rf.commitIndex+1, -1)
 	var toCommit int
@@ -236,7 +236,7 @@ func (rf *Raft) leaderCommit() {
 			}
 		}
 		if count <= rf.nPeers/2 {
-			return
+			break
 		}
 		if log.Term == rf.currentTerm {
 			toCommit = i + 1
@@ -244,16 +244,11 @@ func (rf *Raft) leaderCommit() {
 	}
 	if toCommit > 0 {
 		rf.commitIndex = uncommitted[toCommit-1].Index
-		go func(end int) {
-			for _, log := range uncommitted[:end] {
-				rf.apply(true, log.Command, log.Index)
-				rf.PortPrintf("leader commit: %d,%v", log.Index, log.Command)
-			}
-		}(toCommit)
 	}
+	return toCommit
 }
 
-func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *int64, count *int64) {
+func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *int64, count *int64, accepted *int64) {
 	args := &AppendEntriesArgs{
 		Type:         HEARTBEAT,
 		Term:         rf.currentTerm,
@@ -273,6 +268,7 @@ func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *
 	rf.peers[i].Call("Raft.AppendEntries", args, reply)
 	atomic.AddInt64(count, 1)
 	if reply.Accepted {
+		atomic.AddInt64(accepted, 1)
 		logLength := rf.logGetLen()
 		atomic.StoreInt64(&rf.nextIndex[i], int64(logLength))
 		atomic.StoreInt64(&rf.matchIndex[i], int64(logLength-1))
@@ -291,27 +287,37 @@ func (rf *Raft) sendHeartBeat() {
 	if rf.state != LEADER {
 		return
 	}
-	rf.leaderCommit()
+	toCommit := []int{rf.commitIndex + 1, rf.commitIndex + 1}
+	toCommit[1] += rf.leaderCommit()
 	rf.persist()
 	latestTerm := rf.currentTerm
-	var count int64 = 0
-	for i := 0; i < len(rf.peers); i++ {
+	var sent int64 = 1
+	var accepted int64 = 1
+	for i := 0; i < rf.nPeers; i++ {
 		if i == rf.me {
 			continue
 		}
-		go rf.sendAppendEntries(i, &AppendEntriesReply{}, &latestTerm, &count)
+		go rf.sendAppendEntries(i, &AppendEntriesReply{}, &latestTerm, &sent, &accepted)
 
 	}
 	go func() {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
-		for wait := 0; count < int64(rf.nPeers) && wait < 3; wait++ {
-			time.Sleep(time.Millisecond)
+		for wait := 0; sent < int64(rf.nPeers) && wait < 5; wait++ {
+			time.Sleep(time.Millisecond / 2)
 		}
 		if latestTerm > rf.currentTerm {
 			atomic.StoreInt32(&rf.state, FOLLOWER)
 			atomic.StoreInt64(&rf.currentTerm, latestTerm)
+			return
 		}
+		go func(start int, end int) {
+			for _, log := range rf.logSlice(start, end) {
+				rf.apply(true, log.Command, log.Index)
+				rf.PortPrintf("leader commit: %d,%v", log.Index, log.Command)
+			}
+		}(toCommit[0], toCommit[1])
+
 	}()
 }
 
@@ -330,8 +336,8 @@ func (rf *Raft) startElection() bool {
 		go rf.sendRequestVote(i, &RequestVoteReply{}, &votes)
 	}
 
-	for wait := 0; votes <= int64(rf.nPeers/2) && wait < 3; wait++ {
-		time.Sleep(time.Millisecond)
+	for wait := 0; votes <= int64(rf.nPeers/2) && wait < 5; wait++ {
+		time.Sleep(time.Millisecond / 2)
 	}
 	if votes > int64(rf.nPeers/2) && atomic.CompareAndSwapInt32(&rf.state, CANDIDATE, LEADER) {
 		logLength := rf.logGetLen()

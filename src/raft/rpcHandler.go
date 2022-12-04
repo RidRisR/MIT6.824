@@ -75,6 +75,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	rf.votedFor = args.CandidateId
 	reply.VoteGranted = true
+	rf.persist()
 	// rf.PortPrintf("vote to %d", rf.votedFor)
 	go rf.resetTimer()
 }
@@ -84,6 +85,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 	reply.Term = rf.currentTerm
 	reply.Accepted = false
+
 	if args.Term < reply.Term {
 		// rf.PortPrintf("wrong term %d,%d", args.Term, reply.Term)
 		return
@@ -103,8 +105,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.logAppend(args.Entries)
 	}
 
-	rf.updateCommit(args)
 	reply.Accepted = true
+	rf.updateCommit(args)
 }
 
 func (rf *Raft) updateCommit(args *AppendEntriesArgs) {
