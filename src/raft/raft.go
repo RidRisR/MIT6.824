@@ -19,12 +19,14 @@ package raft
 import (
 	//	"bytes"
 
+	"bytes"
 	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	//	"6.824/labgob"
+	"6.824/labgob"
 	"6.824/labrpc"
 )
 
@@ -89,8 +91,29 @@ type Raft struct {
 	matchIndex []int64
 }
 
-func (rf *Raft) getLogLen() int {
+func (rf *Raft) logGetLen() int {
 	return rf.log.logLen()
+}
+
+func (rf *Raft) logSlice(start int, end int) []LogEntrie {
+	return rf.log.slice(start, end)
+}
+
+func (rf *Raft) logPointRead(index int) LogEntrie {
+	return rf.log.get(index)
+}
+
+func (rf *Raft) logAppend(logs []LogEntrie) {
+	rf.log.append(logs)
+	rf.persist()
+}
+
+func (rf *Raft) logCutTo(index int) {
+	if err := rf.log.cutTo(index); err != nil {
+		rf.PortPrintf(err.Error())
+	} else {
+		rf.persist()
+	}
 }
 
 // return currentTerm and whether this server
@@ -110,12 +133,13 @@ func (rf *Raft) GetState() (int, bool) {
 func (rf *Raft) persist() {
 	// Your code here (2C).
 	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.logSlice(0, -1))
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 // restore previously persisted state.
@@ -125,17 +149,18 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 	// Your code here (2C).
 	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var logData []LogEntrie
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	d.Decode(&rf.currentTerm)
+	d.Decode(&rf.votedFor)
+	if err := d.Decode(&logData); err == nil {
+		rf.log.append(logData)
+	} else {
+		rf.PortPrintf(err.Error())
+	}
 }
 
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
@@ -187,10 +212,10 @@ func (rf *Raft) sendRequestVote(server int, reply *RequestVoteReply, votes *int6
 	args := &RequestVoteArgs{
 		CandidateId:  rf.me,
 		Term:         rf.currentTerm,
-		LastLogIndex: rf.getLogLen() - 1,
+		LastLogIndex: rf.logGetLen() - 1,
 	}
 	if args.LastLogIndex >= 0 {
-		args.LastLogTerm = rf.log.get(args.LastLogIndex).Term
+		args.LastLogTerm = rf.logPointRead(args.LastLogIndex).Term
 	}
 	if rf.peers[server].Call("Raft.RequestVote", args, reply) {
 		if reply.VoteGranted {
@@ -219,11 +244,11 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) leaderCommit() {
-	if rf.getLogLen() == 0 {
+	if rf.logGetLen() == 0 {
 		return
 	}
 
-	uncommitted := rf.log.slice(rf.commitIndex+1, -1)
+	uncommitted := rf.logSlice(rf.commitIndex+1, -1)
 	var toCommit int
 	for i, log := range uncommitted {
 		count := 1
@@ -259,21 +284,21 @@ func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *
 		Term:         rf.currentTerm,
 		LeaderId:     rf.me,
 		LeaderCommit: rf.commitIndex,
-		PrevLogIndex: rf.getLogLen() - 1,
+		PrevLogIndex: rf.logGetLen() - 1,
 	}
 	nextIndex := atomic.LoadInt64(&rf.nextIndex[i])
-	if rf.getLogLen()-1 >= int(nextIndex) {
+	if rf.logGetLen()-1 >= int(nextIndex) {
 		args.Type = LOG
-		args.Entries = rf.log.slice(int(nextIndex), -1)
+		args.Entries = rf.logSlice(int(nextIndex), -1)
 		args.PrevLogIndex = int(nextIndex) - 1
 	}
 	if args.PrevLogIndex >= 0 {
-		args.PrevLogTerm = rf.log.get(args.PrevLogIndex).Term
+		args.PrevLogTerm = rf.logPointRead(args.PrevLogIndex).Term
 	}
 	rf.peers[i].Call("Raft.AppendEntries", args, reply)
 	atomic.AddInt64(count, 1)
 	if reply.Accepted {
-		logLength := rf.getLogLen()
+		logLength := rf.logGetLen()
 		atomic.StoreInt64(&rf.nextIndex[i], int64(logLength))
 		atomic.StoreInt64(&rf.matchIndex[i], int64(logLength-1))
 		return
@@ -303,12 +328,13 @@ func (rf *Raft) sendHeartBeat() {
 	go func() {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
-		for wait := 0; count < int64(rf.nPeers) && wait < 10; wait++ {
+		for wait := 0; count < int64(rf.nPeers) && wait < 3; wait++ {
 			time.Sleep(time.Millisecond)
 		}
 		if latestTerm > rf.currentTerm {
 			atomic.StoreInt32(&rf.state, FOLLOWER)
 			atomic.StoreInt64(&rf.currentTerm, latestTerm)
+			rf.persist()
 		}
 	}()
 }
@@ -318,6 +344,7 @@ func (rf *Raft) startElection() bool {
 	Assert(rf.state == CANDIDATE, "Wrong State")
 	currTerm := atomic.AddInt64(&rf.currentTerm, 1)
 	rf.votedFor = rf.me
+	rf.persist()
 	rf.PortPrintf("new election, term %d", currTerm)
 
 	var votes int64 = 1
@@ -328,11 +355,11 @@ func (rf *Raft) startElection() bool {
 		go rf.sendRequestVote(i, &RequestVoteReply{}, &votes)
 	}
 
-	for wait := 0; votes <= int64(rf.nPeers/2) && wait < 10; wait++ {
+	for wait := 0; votes <= int64(rf.nPeers/2) && wait < 3; wait++ {
 		time.Sleep(time.Millisecond)
 	}
 	if votes > int64(rf.nPeers/2) && atomic.CompareAndSwapInt32(&rf.state, CANDIDATE, LEADER) {
-		logLength := rf.getLogLen()
+		logLength := rf.logGetLen()
 		for i := 0; i < rf.nPeers; i++ {
 			atomic.StoreInt64(&rf.nextIndex[i], int64(logLength))
 			atomic.StoreInt64(&rf.matchIndex[i], -1)
@@ -365,14 +392,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if !isLeader {
 		return -1, int(term), isLeader
 	}
-	index := rf.getLogLen()
+	index := rf.logGetLen()
 	newLog := LogEntrie{
 		Index:   index,
 		Term:    rf.currentTerm,
 		Command: command,
 	}
-	rf.log.append([]LogEntrie{newLog})
-	if rf.getLogLen() != newLog.Index+1 {
+	rf.logAppend([]LogEntrie{newLog})
+	if rf.logGetLen() != newLog.Index+1 {
 		panic("append error")
 	}
 	rf.PortPrintf("start %d", index)
@@ -400,7 +427,6 @@ func (rf *Raft) ticker() {
 				// rf.PortPrintf("lost connect with leader, term %d", rf.currentTerm)
 				rf.mu.Lock()
 				if rf.startElection() {
-
 					rf.sendHeartBeat()
 				}
 				rf.mu.Unlock()

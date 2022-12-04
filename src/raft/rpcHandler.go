@@ -64,7 +64,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 	if rf.commitIndex >= 0 {
-		if rf.commitIndex > args.LastLogIndex || rf.log.get(rf.commitIndex).Term > args.LastLogTerm {
+		if rf.commitIndex > args.LastLogIndex || rf.logPointRead(rf.commitIndex).Term > args.LastLogTerm {
 			rf.PortPrintf("not latest log")
 			return
 		}
@@ -98,30 +98,26 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	atomic.StoreInt32(&rf.state, FOLLOWER)
 	go rf.resetTimer()
 
-	if (rf.getLogLen())-1 < args.PrevLogIndex {
-		rf.PortPrintf("wrong index %d>%d", args.PrevLogIndex, rf.getLogLen()-1)
+	if (rf.logGetLen())-1 < args.PrevLogIndex {
+		rf.PortPrintf("wrong index %d>%d", args.PrevLogIndex, rf.logGetLen()-1)
 		return
 	}
 
-	if args.PrevLogIndex >= 0 && rf.log.get(args.PrevLogIndex).Term != args.PrevLogTerm {
-		rf.PortPrintf("wrong log term %d,%d,%d", args.PrevLogIndex, args.PrevLogTerm, rf.log.get(args.PrevLogIndex).Term)
+	if args.PrevLogIndex >= 0 && rf.logPointRead(args.PrevLogIndex).Term != args.PrevLogTerm {
+		rf.PortPrintf("wrong log term %d,%d,%d", args.PrevLogIndex, args.PrevLogTerm, rf.logPointRead(args.PrevLogIndex).Term)
 		return
 	}
 
-	if (rf.getLogLen()) > (args.PrevLogIndex+1) && rf.log.get(args.PrevLogIndex+1).Term != args.Term {
-		var err error
+	if (rf.logGetLen()) > (args.PrevLogIndex+1) && rf.logPointRead(args.PrevLogIndex+1).Term != args.Term {
 		if args.PrevLogIndex >= 0 {
-			err = rf.log.cutTo(args.PrevLogIndex + 1)
+			rf.logCutTo(args.PrevLogIndex + 1)
 		} else {
-			err = rf.log.cutTo(0)
-		}
-		if err != nil {
-			panic(err.Error())
+			rf.logCutTo(0)
 		}
 	}
 
 	if args.Type == LOG {
-		rf.log.append(args.Entries)
+		rf.logAppend(args.Entries)
 	}
 
 	rf.updateCommit(args)
@@ -134,13 +130,13 @@ func (rf *Raft) updateCommit(args *AppendEntriesArgs) {
 	}
 
 	var commitTo int
-	if rf.getLogLen()-1 < args.LeaderCommit {
-		commitTo = rf.getLogLen() - 1
+	if rf.logGetLen()-1 < args.LeaderCommit {
+		commitTo = rf.logGetLen() - 1
 	} else {
 		commitTo = args.LeaderCommit
 	}
 	go func(start int, end int) {
-		for _, log := range rf.log.slice(start, end) {
+		for _, log := range rf.logSlice(start, end) {
 			rf.PortPrintf("commit: %d", log.Index)
 			rf.apply(true, log.Command, log.Index)
 		}
