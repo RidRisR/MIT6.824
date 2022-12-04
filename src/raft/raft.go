@@ -266,10 +266,14 @@ func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *
 	if args.PrevLogIndex >= 0 {
 		args.PrevLogTerm = rf.logGetItem(args.PrevLogIndex).Term
 	}
-	for wait := 0; !rf.peers[i].Call("Raft.AppendEntries", args, reply) && wait < 30; wait++ {
+	for !rf.peers[i].Call("Raft.AppendEntries", args, reply) && rf.currentTerm == args.Term {
 		time.Sleep(time.Millisecond)
+		rf.PortPrintf("waiting...%d", i)
 	}
 	atomic.AddInt64(count, 1)
+	if rf.currentTerm != args.Term {
+		return
+	}
 	if reply.Accepted {
 		atomic.AddInt64(accepted, 1)
 		logLength := rf.logGetLen()
@@ -277,8 +281,9 @@ func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *
 		atomic.StoreInt64(&rf.matchIndex[i], int64(logLength-1))
 		return
 	}
-	if args.Term == reply.Term {
-		lastIndex, _ := rf.getLastConsensus(reply.LastIndex, reply.LastTerm)
+	if rf.currentTerm == reply.Term {
+		lastIndex, lastTerm := rf.getLastConsensus(reply.LastIndex, reply.LastTerm)
+		rf.PortPrintf("call end %d,%d!= %d,%d", reply.LastIndex, reply.LastTerm, lastIndex, lastTerm)
 		atomic.StoreInt64(&rf.nextIndex[i], int64(lastIndex)+1)
 	}
 	if reply.Term > atomic.LoadInt64(latestTerm) {
@@ -302,10 +307,10 @@ func (rf *Raft) sendHeartBeat() {
 		go rf.sendAppendEntries(i, &AppendEntriesReply{}, &latestTerm, &sent, &accepted)
 
 	}
-	go func() {
+	go func(sent *int64, accepted *int64) {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
-		for wait := 0; sent < int64(rf.nPeers) && wait < 10; wait++ {
+		for wait := 0; *sent < int64(rf.nPeers) && wait < 10; wait++ {
 			time.Sleep(time.Millisecond)
 		}
 		if latestTerm > rf.currentTerm {
@@ -313,13 +318,13 @@ func (rf *Raft) sendHeartBeat() {
 			atomic.StoreInt64(&rf.currentTerm, latestTerm)
 			return
 		}
-		if accepted <= int64(rf.nPeers)/2 {
+		if *accepted <= int64(rf.nPeers)/2 {
 			// rf.PortPrintf("not enough accepted")
 			return
 		}
 		go rf.apply(applyTo)
 
-	}()
+	}(&sent, &accepted)
 }
 
 func (rf *Raft) startElection() bool {
@@ -337,12 +342,10 @@ func (rf *Raft) startElection() bool {
 		go rf.sendRequestVote(i, &RequestVoteReply{}, &votes)
 	}
 
-	for wait := 0; atomic.LoadInt64(&votes) <= int64(rf.nPeers/2) && wait < 10; wait++ {
-		rf.PortPrintf("vote %d", votes)
+	for wait := 0; atomic.LoadInt64(&votes) <= int64(rf.nPeers/2) && wait < 15; wait++ {
 		time.Sleep(time.Millisecond)
 	}
 	if atomic.LoadInt64(&votes) > int64(rf.nPeers/2) && atomic.CompareAndSwapInt32(&rf.state, CANDIDATE, LEADER) {
-		rf.PortPrintf("try to move on %d", votes)
 		logLength := rf.logGetLen()
 		for i := 0; i < rf.nPeers; i++ {
 			atomic.StoreInt64(&rf.nextIndex[i], int64(logLength))

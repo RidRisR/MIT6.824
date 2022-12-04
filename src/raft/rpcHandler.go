@@ -87,6 +87,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.updateCommit(args.LeaderCommit)
 	defer rf.persist()
 	reply.Term = rf.currentTerm
 	reply.Accepted = false
@@ -109,22 +110,22 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Type == LOG {
 		rf.logAppend(args.Entries)
 	}
-	rf.updateCommit(args)
 	reply.Accepted = true
 
 }
 
-func (rf *Raft) updateCommit(args *AppendEntriesArgs) {
-	if rf.commitIndex >= args.LeaderCommit {
+func (rf *Raft) updateCommit(leaderCommit int) {
+	if rf.commitIndex >= leaderCommit {
+		rf.PortPrintf("No need")
 		return
 	}
 
 	var commitTo int
 	lastIndex := rf.logGetLen() - 1
-	if lastIndex < args.LeaderCommit {
+	if lastIndex < leaderCommit {
 		commitTo = lastIndex
 	} else {
-		commitTo = args.LeaderCommit
+		commitTo = leaderCommit
 	}
 	go rf.apply(commitTo)
 	rf.commitIndex = commitTo
@@ -137,8 +138,12 @@ func (rf *Raft) resetTimer() {
 func (rf *Raft) apply(end int) {
 	rf.applyMu.Lock()
 	defer rf.applyMu.Unlock()
-	if rf.logGetLen() <= end || rf.lastAppliedIndex >= end {
+	if rf.lastAppliedIndex >= end {
+		rf.PortPrintf("No need??")
 		return
+	}
+	if rf.logGetLen()-1 < end {
+		end = rf.logGetLen() - 1
 	}
 	for _, log := range rf.logSlice(rf.lastAppliedIndex+1, end+1) {
 		rf.PortPrintf("commit: %d,%v", log.Index, log.Command)
