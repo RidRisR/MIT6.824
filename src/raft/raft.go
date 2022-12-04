@@ -221,7 +221,7 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft) leaderCommit() int {
 	if rf.logGetLen() == 0 {
-		return 0
+		return -1
 	}
 	uncommitted := rf.logSlice(rf.commitIndex+1, -1)
 	oldCommitIndex := rf.commitIndex
@@ -240,6 +240,7 @@ func (rf *Raft) leaderCommit() int {
 			break
 		}
 		if log.Term == rf.currentTerm {
+
 			toCommit = i
 		}
 	}
@@ -307,7 +308,7 @@ func (rf *Raft) sendHeartBeat() {
 		go rf.sendAppendEntries(i, &AppendEntriesReply{}, &latestTerm, &sent, &accepted)
 
 	}
-	go func(sent *int64, accepted *int64) {
+	go func(sent *int64, accepted *int64, applyTo int) {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
 		for wait := 0; *sent < int64(rf.nPeers) && wait < 10; wait++ {
@@ -324,7 +325,7 @@ func (rf *Raft) sendHeartBeat() {
 			return
 		}
 
-	}(&sent, &accepted)
+	}(&sent, &accepted, applyTo)
 }
 
 func (rf *Raft) startElection() bool {
