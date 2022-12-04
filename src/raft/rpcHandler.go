@@ -92,7 +92,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	atomic.StoreInt32(&rf.state, FOLLOWER)
 	go rf.resetTimer()
 
-	reply.LastIndex, reply.LastTerm = rf.log.getLastConsensus(args.PrevLogIndex, args.PrevLogTerm)
+	reply.LastIndex, reply.LastTerm = rf.getLastConsensus(args.PrevLogIndex, args.PrevLogTerm)
 	if reply.LastIndex != args.PrevLogIndex || reply.LastTerm != args.PrevLogTerm {
 		rf.PortPrintf("no consensus %d,%d != %d,%d", args.PrevLogIndex, args.PrevLogTerm, reply.LastIndex, reply.LastTerm)
 		return

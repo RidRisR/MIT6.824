@@ -279,7 +279,7 @@ func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *
 		return
 	}
 	if args.Term == reply.Term && atomic.LoadInt64(&rf.nextIndex[i]) > 0 {
-		lastIndex, _ := rf.log.getLastConsensus(reply.LastIndex, reply.LastTerm)
+		lastIndex, _ := rf.getLastConsensus(reply.LastIndex, reply.LastTerm)
 		atomic.StoreInt64(&rf.nextIndex[i], int64(lastIndex)+1)
 	}
 	if reply.Term > atomic.LoadInt64(latestTerm) {
