@@ -271,6 +271,7 @@ func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *
 		time.Sleep(time.Millisecond)
 		rf.PortPrintf("waiting...%d", i)
 	}
+	rf.PortPrintf("call end %d,%d", reply.LastIndex, reply.LastTerm)
 	atomic.AddInt64(count, 1)
 	if rf.currentTerm != args.Term {
 		return
@@ -286,8 +287,7 @@ func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *
 		lastIndex, lastTerm := rf.getLastConsensus(reply.LastIndex, reply.LastTerm)
 		rf.PortPrintf("call end %d,%d!= %d,%d", reply.LastIndex, reply.LastTerm, lastIndex, lastTerm)
 		atomic.StoreInt64(&rf.nextIndex[i], int64(lastIndex)+1)
-	}
-	if reply.Term > atomic.LoadInt64(latestTerm) {
+	} else if reply.Term > atomic.LoadInt64(latestTerm) {
 		atomic.StoreInt64(latestTerm, reply.Term)
 	}
 }
