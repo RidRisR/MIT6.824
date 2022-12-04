@@ -33,8 +33,10 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term     int64
-	Accepted bool
+	Term      int64
+	Accepted  bool
+	LastTerm  int64
+	LastIndex int
 }
 
 type LogEntrie struct {
@@ -64,7 +66,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 	if rf.commitIndex >= 0 {
-		if rf.commitIndex > args.LastLogIndex || rf.logPointRead(rf.commitIndex).Term > args.LastLogTerm {
+		if rf.commitIndex > args.LastLogIndex || rf.logGetItem(rf.commitIndex).Term > args.LastLogTerm {
 			rf.PortPrintf("not latest log")
 			return
 		}
@@ -103,12 +105,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	if args.PrevLogIndex >= 0 && rf.logPointRead(args.PrevLogIndex).Term != args.PrevLogTerm {
-		rf.PortPrintf("wrong log term %d,%d,%d", args.PrevLogIndex, args.PrevLogTerm, rf.logPointRead(args.PrevLogIndex).Term)
+	if args.PrevLogIndex >= 0 && rf.logGetItem(args.PrevLogIndex).Term != args.PrevLogTerm {
+		rf.PortPrintf("wrong log term %d,%d,%d", args.PrevLogIndex, args.PrevLogTerm, rf.logGetItem(args.PrevLogIndex).Term)
 		return
 	}
 
-	if (rf.logGetLen()) > (args.PrevLogIndex+1) && rf.logPointRead(args.PrevLogIndex+1).Term != args.Term {
+	if (rf.logGetLen()) > (args.PrevLogIndex+1) && rf.logGetItem(args.PrevLogIndex+1).Term != args.Term {
 		if args.PrevLogIndex >= 0 {
 			rf.logCutTo(args.PrevLogIndex + 1)
 		} else {

@@ -96,7 +96,7 @@ type Raft struct {
 func (rf *Raft) GetState() (int, bool) {
 	// Your code here (2A).
 	rf.mu.Lock()
-	rf.mu.Unlock()
+	defer rf.mu.Unlock()
 	var term int = int(rf.currentTerm)
 	var isleader bool = rf.state == LEADER
 	return term, isleader
@@ -112,6 +112,7 @@ func (rf *Raft) persist() {
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
+	e.Encode(rf.commitIndex)
 	e.Encode(rf.logSlice(0, -1))
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
@@ -127,11 +128,11 @@ func (rf *Raft) readPersist(data []byte) {
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
 	var logData []LogEntrie
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	d.Decode(&rf.currentTerm)
 	d.Decode(&rf.votedFor)
+	d.Decode(&rf.commitIndex)
 	if err := d.Decode(&logData); err == nil {
+		rf.PortPrintf("reading log")
 		rf.log.append(logData)
 	} else {
 		rf.PortPrintf(err.Error())
@@ -190,7 +191,7 @@ func (rf *Raft) sendRequestVote(server int, reply *RequestVoteReply, votes *int6
 		LastLogIndex: rf.logGetLen() - 1,
 	}
 	if args.LastLogIndex >= 0 {
-		args.LastLogTerm = rf.logPointRead(args.LastLogIndex).Term
+		args.LastLogTerm = rf.logGetItem(args.LastLogIndex).Term
 	}
 	if rf.peers[server].Call("Raft.RequestVote", args, reply) {
 		if reply.VoteGranted {
@@ -222,7 +223,6 @@ func (rf *Raft) leaderCommit() {
 	if rf.logGetLen() == 0 {
 		return
 	}
-
 	uncommitted := rf.logSlice(rf.commitIndex+1, -1)
 	var toCommit int
 	for i, log := range uncommitted {
@@ -268,7 +268,7 @@ func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *
 		args.PrevLogIndex = int(nextIndex) - 1
 	}
 	if args.PrevLogIndex >= 0 {
-		args.PrevLogTerm = rf.logPointRead(args.PrevLogIndex).Term
+		args.PrevLogTerm = rf.logGetItem(args.PrevLogIndex).Term
 	}
 	rf.peers[i].Call("Raft.AppendEntries", args, reply)
 	atomic.AddInt64(count, 1)
@@ -291,6 +291,7 @@ func (rf *Raft) sendHeartBeat() {
 		return
 	}
 	rf.leaderCommit()
+	rf.persist()
 	latestTerm := rf.currentTerm
 	var count int64 = 0
 	for i := 0; i < len(rf.peers); i++ {
@@ -309,7 +310,6 @@ func (rf *Raft) sendHeartBeat() {
 		if latestTerm > rf.currentTerm {
 			atomic.StoreInt32(&rf.state, FOLLOWER)
 			atomic.StoreInt64(&rf.currentTerm, latestTerm)
-			rf.persist()
 		}
 	}()
 }
@@ -321,7 +321,6 @@ func (rf *Raft) startElection() bool {
 	rf.votedFor = rf.me
 	rf.persist()
 	rf.PortPrintf("new election, term %d", currTerm)
-
 	var votes int64 = 1
 	for i := 0; i < rf.nPeers; i++ {
 		if i == rf.me {
@@ -430,6 +429,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.nextIndex = make([]int64, rf.nPeers)
 	rf.matchIndex = make([]int64, rf.nPeers)
 	rf.commitIndex = -1
+	rf.lastAppliedIndex = -1
 	rf.persister = persister
 	rf.me = me
 	rf.applyCh = applyCh
