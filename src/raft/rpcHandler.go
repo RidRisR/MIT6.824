@@ -100,15 +100,22 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	atomic.StoreInt32(&rf.state, FOLLOWER)
 	go rf.resetTimer()
 
-	if (rf.logGetLen())-1 < args.PrevLogIndex {
-		rf.PortPrintf("wrong index %d>%d", args.PrevLogIndex, rf.logGetLen()-1)
+	reply.LastIndex, reply.LastTerm = rf.log.getLastConsensus(args.PrevLogIndex, args.PrevLogTerm)
+	if reply.LastIndex != args.PrevLogIndex || reply.LastTerm != args.PrevLogTerm {
+		rf.PortPrintf("no consensus %d,%d != %d,%d", args.PrevLogIndex, args.PrevLogTerm, reply.LastIndex, reply.LastTerm)
 		return
 	}
+	rf.PortPrintf("consensus")
 
-	if args.PrevLogIndex >= 0 && rf.logGetItem(args.PrevLogIndex).Term != args.PrevLogTerm {
-		rf.PortPrintf("wrong log term %d,%d,%d", args.PrevLogIndex, args.PrevLogTerm, rf.logGetItem(args.PrevLogIndex).Term)
-		return
-	}
+	// if (rf.logGetLen())-1 < args.PrevLogIndex {
+	// 	rf.PortPrintf("wrong index %d>%d", args.PrevLogIndex, rf.logGetLen()-1)
+	// 	return
+	// }
+
+	// if args.PrevLogIndex >= 0 && rf.logGetItem(args.PrevLogIndex).Term != args.PrevLogTerm {
+	// 	rf.PortPrintf("wrong log term %d,%d,%d", args.PrevLogIndex, args.PrevLogTerm, rf.logGetItem(args.PrevLogIndex).Term)
+	// 	return
+	// }
 
 	if (rf.logGetLen()) > (args.PrevLogIndex+1) && rf.logGetItem(args.PrevLogIndex+1).Term != args.Term {
 		if args.PrevLogIndex >= 0 {
@@ -139,7 +146,7 @@ func (rf *Raft) updateCommit(args *AppendEntriesArgs) {
 	}
 	go func(start int, end int) {
 		for _, log := range rf.logSlice(start, end) {
-			rf.PortPrintf("commit: %d", log.Index)
+			rf.PortPrintf("commit: %d,%v", log.Index, log.Command)
 			rf.apply(true, log.Command, log.Index)
 		}
 	}(rf.commitIndex+1, commitTo+1)

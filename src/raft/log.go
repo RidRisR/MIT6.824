@@ -6,10 +6,9 @@ import (
 )
 
 type Log struct {
-	mu      sync.Mutex
-	data    []LogEntrie
-	termMap map[int64]int
-	len     int
+	mu   sync.Mutex
+	data []LogEntrie
+	len  int
 }
 
 func (l *Log) append(logs []LogEntrie) {
@@ -19,9 +18,6 @@ func (l *Log) append(logs []LogEntrie) {
 		if log.Index == l.len {
 			l.data = append(l.data, log)
 			l.len++
-			if _, ok := l.termMap[log.Term]; !ok {
-				l.termMap[log.Term] = log.Index
-			}
 		}
 	}
 }
@@ -35,17 +31,8 @@ func (l *Log) cutTo(index int) error {
 	if index < 0 || l.len < index {
 		return errors.New("illegal index")
 	}
-	lastTerm := l.data[l.len-1].Term
 	l.data = l.data[:index]
 	l.len = index
-
-	if l.len == 0 {
-		l.termMap = make(map[int64]int)
-		return nil
-	}
-	for i := l.data[l.len-1].Term + 1; i < lastTerm+1; i++ {
-		delete(l.termMap, i)
-	}
 	return nil
 }
 
@@ -67,18 +54,27 @@ func (l *Log) get(index int) LogEntrie {
 	return l.data[index]
 }
 
-func (l *Log) getLastConsensus(term int64) (lastTerm int64, index int) {
+func (l *Log) getLastConsensus(index int, term int64) (lastIndex int, lastTerm int64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.len == 0 {
-		return 0, -1
+	if index < 0 || term <= 0 || l.len <= 0 {
+		return -1, 0
 	}
-	for i := term; i > 0; i-- {
-		if j, ok := l.termMap[i]; ok {
-			return i, j
+	if l.len > index && l.data[index].Term == term {
+		return index, term
+	}
+	startIndex := index
+	startTerm := term
+	if l.len <= index {
+		startIndex = l.len - 1
+		startTerm = l.data[startIndex].Term
+	}
+	for i := startIndex; i > 0; i-- {
+		if l.data[i].Term < startTerm {
+			return i, l.data[i].Term
 		}
 	}
-	return 0, -1
+	return -1, 0
 }
 
 func (l *Log) logLen() int {
@@ -87,7 +83,7 @@ func (l *Log) logLen() int {
 	return l.len
 }
 
-//wrapper
+//wrapper functions
 
 func (rf *Raft) logGetLen() int {
 	return rf.log.logLen()
@@ -112,4 +108,8 @@ func (rf *Raft) logCutTo(index int) {
 	} else {
 		rf.persist()
 	}
+}
+
+func (rf *Raft) getLastConsensus(index int, term int64) (lastIndex int, lastTerm int64) {
+	return rf.log.getLastConsensus(index, term)
 }

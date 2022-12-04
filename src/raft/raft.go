@@ -247,7 +247,7 @@ func (rf *Raft) leaderCommit() {
 		go func(end int) {
 			for _, log := range uncommitted[:end] {
 				rf.apply(true, log.Command, log.Index)
-				rf.PortPrintf("leader commit: %d", log.Index)
+				rf.PortPrintf("leader commit: %d,%v", log.Index, log.Command)
 			}
 		}(toCommit)
 	}
@@ -279,7 +279,8 @@ func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *
 		return
 	}
 	if args.Term == reply.Term && atomic.LoadInt64(&rf.nextIndex[i]) > 0 {
-		atomic.AddInt64(&rf.nextIndex[i], -1)
+		lastIndex, _ := rf.log.getLastConsensus(reply.LastIndex, reply.LastTerm)
+		atomic.StoreInt64(&rf.nextIndex[i], int64(lastIndex)+1)
 	}
 	if reply.Term > atomic.LoadInt64(latestTerm) {
 		atomic.StoreInt64(latestTerm, reply.Term)
@@ -376,7 +377,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if rf.logGetLen() != newLog.Index+1 {
 		panic("append error")
 	}
-	rf.PortPrintf("start %d", index)
+	rf.PortPrintf("start %d,%v,%d", index, command, term)
 	//tester index start from 1
 	return index + 1, int(term), isLeader
 }
