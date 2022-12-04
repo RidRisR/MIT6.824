@@ -96,7 +96,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	atomic.StoreInt32(&rf.state, FOLLOWER)
+	if rf.state != FOLLOWER || rf.currentTerm != args.Term {
+		atomic.StoreInt32(&rf.state, FOLLOWER)
+		atomic.StoreInt64(&rf.currentTerm, args.Term)
+	}
 	go rf.resetTimer()
 
 	reply.LastIndex, reply.LastTerm = rf.getLastConsensus(args.PrevLogIndex, args.PrevLogTerm)
@@ -126,6 +129,7 @@ func (rf *Raft) updateCommit(leaderCommit int) {
 		commitTo = leaderCommit
 	}
 	go rf.apply(commitTo)
+	rf.PortPrintf("commit updat %d", commitTo)
 	rf.commitIndex = commitTo
 }
 
