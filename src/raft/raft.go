@@ -113,7 +113,7 @@ func (rf *Raft) persist() {
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
-	e.Encode(rf.commitIndex)
+	e.Encode(rf.lastAppliedIndex)
 	e.Encode(rf.logSlice(0, -1))
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
@@ -131,7 +131,7 @@ func (rf *Raft) readPersist(data []byte) {
 	var logData []LogEntrie
 	d.Decode(&rf.currentTerm)
 	d.Decode(&rf.votedFor)
-	d.Decode(&rf.commitIndex)
+	d.Decode(&rf.lastAppliedIndex)
 	if err := d.Decode(&logData); err == nil {
 		rf.PortPrintf("reading log")
 		rf.log.append(logData)

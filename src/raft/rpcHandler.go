@@ -66,8 +66,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.PortPrintf("have voted to %d", rf.votedFor)
 		return
 	}
-	if rf.commitIndex >= 0 {
-		if rf.commitIndex > args.LastLogIndex || rf.logGetItem(rf.commitIndex).Term > args.LastLogTerm {
+	if rf.lastAppliedIndex >= 0 {
+		if rf.lastAppliedIndex > args.LastLogIndex || rf.logGetItem(rf.lastAppliedIndex).Term > args.LastLogTerm {
 			rf.PortPrintf("not latest log")
 			return
 		}
@@ -99,7 +99,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.PortPrintf("no consensus %d,%d != %d,%d", args.PrevLogIndex, args.PrevLogTerm, reply.LastIndex, reply.LastTerm)
 		return
 	}
-	// rf.PortPrintf("consensus %d,%d = %d,%d", args.PrevLogIndex, args.PrevLogTerm, reply.LastIndex, reply.LastTerm)
+	rf.PortPrintf("consensus %d,%d = %d,%d", args.PrevLogIndex, args.PrevLogTerm, reply.LastIndex, reply.LastTerm)
 
 	if args.Type == LOG {
 		rf.logAppend(args.Entries)
