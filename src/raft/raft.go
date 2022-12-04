@@ -311,6 +311,10 @@ func (rf *Raft) sendHeartBeat() {
 			atomic.StoreInt64(&rf.currentTerm, latestTerm)
 			return
 		}
+		if accepted <= int64(rf.nPeers)/2 {
+			rf.PortPrintf("not enough accepted")
+			return
+		}
 		go func(start int, end int) {
 			for _, log := range rf.logSlice(start, end) {
 				rf.apply(true, log.Command, log.Index)

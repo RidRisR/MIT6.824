@@ -13,17 +13,22 @@ type Log struct {
 func (l *Log) append(logs []LogEntrie) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	for _, log := range logs {
+	isDone := true
+	for i, log := range logs {
 		if log.Index == l.len {
-			l.data = append(l.data, log)
-			l.len++
-			continue
+			logs = logs[i:]
+			isDone = false
+			break
 		}
 		if log.Command != l.data[log.Index].Command {
 			l.data = l.data[:log.Index]
 			l.data = append(l.data, log)
 			l.len = log.Index + 1
 		}
+	}
+	if !isDone {
+		l.data = append(l.data, logs...)
+		l.len = len(l.data)
 	}
 }
 
