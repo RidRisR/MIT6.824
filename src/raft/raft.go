@@ -267,14 +267,14 @@ func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *
 	if args.PrevLogIndex >= 0 {
 		args.PrevLogTerm = rf.logGetItem(args.PrevLogIndex).Term
 	}
-	for !rf.peers[i].Call("Raft.AppendEntries", args, reply) && rf.currentTerm == args.Term {
+	for wait := 0; !rf.peers[i].Call("Raft.AppendEntries", args, reply) && rf.currentTerm == args.Term && wait < 60; wait++ {
 		time.Sleep(time.Millisecond)
 		rf.PortPrintf("waiting...%d", i)
 	}
 
 	atomic.AddInt64(count, 1)
 	if rf.currentTerm != args.Term {
-		rf.PortPrintf("call end%d (%d != %d?)", i, rf.currentTerm, reply.Term)
+		// rf.PortPrintf("call end%d (%d != %d?)", i, rf.currentTerm, reply.Term)
 		return
 	}
 	if reply.Accepted {

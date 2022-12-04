@@ -107,7 +107,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.PortPrintf("no consensus %d,%d != %d,%d", args.PrevLogIndex, args.PrevLogTerm, reply.LastIndex, reply.LastTerm)
 		return
 	}
-	rf.PortPrintf("consensus %d,%d = %d,%d", args.PrevLogIndex, args.PrevLogTerm, reply.LastIndex, reply.LastTerm)
+	rf.PortPrintf("consensus %d,%d = %d,%d (%d)", args.PrevLogIndex, args.PrevLogTerm, reply.LastIndex, reply.LastTerm, rf.lastAppliedIndex)
 
 	if args.Type == LOG {
 		rf.logAppend(args.Entries)
