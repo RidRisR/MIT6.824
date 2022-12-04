@@ -318,11 +318,11 @@ func (rf *Raft) sendHeartBeat() {
 			atomic.StoreInt64(&rf.currentTerm, latestTerm)
 			return
 		}
-		if *accepted <= int64(rf.nPeers)/2 {
-			// rf.PortPrintf("not enough accepted")
+		if *accepted > int64(rf.nPeers)/2 {
+			rf.PortPrintf("accepted %d", *accepted)
+			go rf.apply(applyTo)
 			return
 		}
-		go rf.apply(applyTo)
 
 	}(&sent, &accepted)
 }

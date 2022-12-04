@@ -87,7 +87,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	defer rf.updateCommit(args.LeaderCommit)
 	defer rf.persist()
 	reply.Term = rf.currentTerm
 	reply.Accepted = false
@@ -111,12 +110,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.logAppend(args.Entries)
 	}
 	reply.Accepted = true
-
+	rf.updateCommit(args.LeaderCommit)
 }
 
 func (rf *Raft) updateCommit(leaderCommit int) {
 	if rf.commitIndex >= leaderCommit {
-		rf.PortPrintf("No need")
 		return
 	}
 
@@ -139,11 +137,10 @@ func (rf *Raft) apply(end int) {
 	rf.applyMu.Lock()
 	defer rf.applyMu.Unlock()
 	if rf.lastAppliedIndex >= end {
-		rf.PortPrintf("No need??")
 		return
 	}
 	if rf.logGetLen()-1 < end {
-		end = rf.logGetLen() - 1
+		rf.PortPrintf("wrong end %d,%d", rf.logGetLen()-1, end)
 	}
 	for _, log := range rf.logSlice(rf.lastAppliedIndex+1, end+1) {
 		rf.PortPrintf("commit: %d,%v", log.Index, log.Command)

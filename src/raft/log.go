@@ -20,7 +20,7 @@ func (l *Log) append(logs []LogEntrie) {
 			isDone = false
 			break
 		}
-		if log.Command != l.data[log.Index].Command {
+		if log.Command != l.data[log.Index].Command || log.Term != l.data[log.Index].Term {
 			l.data = l.data[:log.Index]
 			l.data = append(l.data, log)
 			l.len = log.Index + 1
