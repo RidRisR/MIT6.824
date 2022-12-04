@@ -45,7 +45,7 @@ func (l *Log) get(index int) LogEntrie {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if index == -1 {
-		return l.data[l.len]
+		return l.data[l.len-1]
 	}
 	return l.data[index]
 }

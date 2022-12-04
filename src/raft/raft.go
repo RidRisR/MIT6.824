@@ -113,7 +113,6 @@ func (rf *Raft) persist() {
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
-	// e.Encode(rf.lastAppliedIndex)
 	e.Encode(rf.logSlice(0, -1))
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
@@ -276,8 +275,9 @@ func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *
 		atomic.StoreInt64(&rf.matchIndex[i], int64(logLength-1))
 		return
 	}
-	if args.Term == reply.Term && atomic.LoadInt64(&rf.nextIndex[i]) > 0 {
+	if args.Term == reply.Term {
 		lastIndex, _ := rf.getLastConsensus(reply.LastIndex, reply.LastTerm)
+		// rf.PortPrintf("new consensus: %d,%d", lastIndex, lastTerm)
 		atomic.StoreInt64(&rf.nextIndex[i], int64(lastIndex)+1)
 	}
 	if reply.Term > atomic.LoadInt64(latestTerm) {

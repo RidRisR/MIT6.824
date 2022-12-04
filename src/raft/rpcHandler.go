@@ -68,7 +68,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	if rf.logGetLen() > 0 {
-		lastLog := rf.logGetItem(rf.logGetLen() - 1)
+		lastLog := rf.logGetItem(-1)
 		if lastLog.Index > args.LastLogIndex || lastLog.Term > args.LastLogTerm {
 			rf.PortPrintf("not latest log")
 			return
