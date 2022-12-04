@@ -99,14 +99,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.PortPrintf("no consensus %d,%d != %d,%d", args.PrevLogIndex, args.PrevLogTerm, reply.LastIndex, reply.LastTerm)
 		return
 	}
-	rf.PortPrintf("consensus %d,%d = %d,%d", args.PrevLogIndex, args.PrevLogTerm, reply.LastIndex, reply.LastTerm)
+	// rf.PortPrintf("consensus %d,%d = %d,%d", args.PrevLogIndex, args.PrevLogTerm, reply.LastIndex, reply.LastTerm)
 
 	if args.Type == LOG {
 		rf.logAppend(args.Entries)
 	}
-
-	reply.Accepted = true
 	rf.updateCommit(args)
+	reply.Accepted = true
+
 }
 
 func (rf *Raft) updateCommit(args *AppendEntriesArgs) {
@@ -115,12 +115,13 @@ func (rf *Raft) updateCommit(args *AppendEntriesArgs) {
 	}
 
 	var commitTo int
-	if rf.logGetLen()-1 < args.LeaderCommit {
-		commitTo = rf.logGetLen() - 1
+	lastIndex := rf.logGetLen() - 1
+	if lastIndex < args.LeaderCommit {
+		commitTo = lastIndex
 	} else {
 		commitTo = args.LeaderCommit
 	}
-	go rf.apply(commitTo + 1)
+	go rf.apply(commitTo)
 	rf.commitIndex = commitTo
 }
 
@@ -131,10 +132,10 @@ func (rf *Raft) resetTimer() {
 func (rf *Raft) apply(end int) {
 	rf.applyMu.Lock()
 	defer rf.applyMu.Unlock()
-	if rf.logGetLen() < end {
+	if rf.logGetLen() <= end || rf.lastAppliedIndex >= end {
 		return
 	}
-	for _, log := range rf.logSlice(rf.lastAppliedIndex, end) {
+	for _, log := range rf.logSlice(rf.lastAppliedIndex+1, end+1) {
 		rf.PortPrintf("commit: %d,%v", log.Index, log.Command)
 		rf.applyCh <- ApplyMsg{
 			CommandValid: true,

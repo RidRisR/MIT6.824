@@ -81,6 +81,7 @@ type Raft struct {
 	commitIndex      int
 	lastAppliedIndex int
 	msgCh            chan LogEntrie
+	applyMu          sync.Mutex
 	applyCh          chan ApplyMsg
 	heartbeatTimeout time.Duration
 	electionTimeout  time.Duration
@@ -224,7 +225,8 @@ func (rf *Raft) leaderCommit() int {
 		return 0
 	}
 	uncommitted := rf.logSlice(rf.commitIndex+1, -1)
-	var toCommit int
+	oldCommitIndex := rf.commitIndex
+	toCommit := -1
 	for i, log := range uncommitted {
 		count := 1
 		for j := 0; j < rf.nPeers; j++ {
@@ -239,13 +241,13 @@ func (rf *Raft) leaderCommit() int {
 			break
 		}
 		if log.Term == rf.currentTerm {
-			toCommit = i + 1
+			toCommit = i
 		}
 	}
-	if toCommit > 0 {
-		rf.commitIndex = uncommitted[toCommit-1].Index
+	if toCommit >= 0 {
+		rf.commitIndex = uncommitted[toCommit].Index
 	}
-	return toCommit
+	return toCommit + oldCommitIndex + 1
 }
 
 func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *int64, count *int64, accepted *int64) {
@@ -287,8 +289,7 @@ func (rf *Raft) sendHeartBeat() {
 	if rf.state != LEADER {
 		return
 	}
-	toCommit := []int{rf.commitIndex + 1, rf.commitIndex + 1}
-	toCommit[1] += rf.leaderCommit()
+	applyTo := rf.leaderCommit()
 	rf.persist()
 	latestTerm := rf.currentTerm
 	var sent int64 = 1
@@ -304,7 +305,7 @@ func (rf *Raft) sendHeartBeat() {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
 		for wait := 0; sent < int64(rf.nPeers) && wait < 5; wait++ {
-			time.Sleep(time.Millisecond / 2)
+			time.Sleep(time.Millisecond / 5)
 		}
 		if latestTerm > rf.currentTerm {
 			atomic.StoreInt32(&rf.state, FOLLOWER)
@@ -312,22 +313,17 @@ func (rf *Raft) sendHeartBeat() {
 			return
 		}
 		if accepted <= int64(rf.nPeers)/2 {
-			rf.PortPrintf("not enough accepted")
+			// rf.PortPrintf("not enough accepted")
 			return
 		}
-		go func(start int, end int) {
-			for _, log := range rf.logSlice(start, end) {
-				rf.apply(true, log.Command, log.Index)
-				rf.PortPrintf("leader commit: %d,%v", log.Index, log.Command)
-			}
-		}(toCommit[0], toCommit[1])
+		go rf.apply(applyTo)
 
 	}()
 }
 
 func (rf *Raft) startElection() bool {
 	atomic.CompareAndSwapInt32(&rf.state, FOLLOWER, CANDIDATE)
-	Assert(rf.state == CANDIDATE, "Wrong State")
+	// Assert(rf.state == CANDIDATE, "Wrong State")
 	currTerm := atomic.AddInt64(&rf.currentTerm, 1)
 	rf.votedFor = rf.me
 	rf.persist()
@@ -341,7 +337,7 @@ func (rf *Raft) startElection() bool {
 	}
 
 	for wait := 0; votes <= int64(rf.nPeers/2) && wait < 5; wait++ {
-		time.Sleep(time.Millisecond / 2)
+		time.Sleep(time.Millisecond / 5)
 	}
 	if votes > int64(rf.nPeers/2) && atomic.CompareAndSwapInt32(&rf.state, CANDIDATE, LEADER) {
 		logLength := rf.logGetLen()
