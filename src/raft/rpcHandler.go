@@ -120,12 +120,7 @@ func (rf *Raft) updateCommit(args *AppendEntriesArgs) {
 	} else {
 		commitTo = args.LeaderCommit
 	}
-	go func(start int, end int) {
-		for _, log := range rf.logSlice(start, end) {
-			rf.PortPrintf("commit: %d,%v", log.Index, log.Command)
-			rf.apply(true, log.Command, log.Index)
-		}
-	}(rf.commitIndex+1, commitTo+1)
+	go rf.apply(commitTo + 1)
 	rf.commitIndex = commitTo
 }
 
@@ -133,10 +128,19 @@ func (rf *Raft) resetTimer() {
 	rf.msgCh <- LogEntrie{}
 }
 
-func (rf *Raft) apply(valid bool, command interface{}, index int) {
-	rf.applyCh <- ApplyMsg{
-		CommandValid: valid,
-		Command:      command,
-		CommandIndex: index + 1,
+func (rf *Raft) apply(end int) {
+	rf.applyMu.Lock()
+	defer rf.applyMu.Unlock()
+	if rf.logGetLen() < end {
+		return
 	}
+	for _, log := range rf.logSlice(rf.lastAppliedIndex, end) {
+		rf.PortPrintf("commit: %d,%v", log.Index, log.Command)
+		rf.applyCh <- ApplyMsg{
+			CommandValid: true,
+			Command:      log.Command,
+			CommandIndex: log.Index + 1,
+		}
+	}
+	rf.lastAppliedIndex = end
 }
