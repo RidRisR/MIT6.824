@@ -314,11 +314,10 @@ func (rf *Raft) sendHeartBeat() {
 		defer rf.mu.Unlock()
 		for wait := 0; *sent < int64(rf.nPeers) && wait < 30; wait++ {
 			time.Sleep(time.Millisecond)
-		}
-		if latestTerm > rf.currentTerm {
-			atomic.StoreInt32(&rf.state, FOLLOWER)
-			atomic.StoreInt64(&rf.currentTerm, latestTerm)
-			return
+			if latestTerm > rf.currentTerm {
+				atomic.StoreInt32(&rf.state, FOLLOWER)
+				atomic.StoreInt64(&rf.currentTerm, latestTerm)
+			}
 		}
 		if *accepted > int64(rf.nPeers)/2 && rf.state == LEADER {
 			rf.PortPrintf("accepted %d", *accepted)
