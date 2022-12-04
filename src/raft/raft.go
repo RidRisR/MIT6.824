@@ -91,31 +91,6 @@ type Raft struct {
 	matchIndex []int64
 }
 
-func (rf *Raft) logGetLen() int {
-	return rf.log.logLen()
-}
-
-func (rf *Raft) logSlice(start int, end int) []LogEntrie {
-	return rf.log.slice(start, end)
-}
-
-func (rf *Raft) logPointRead(index int) LogEntrie {
-	return rf.log.get(index)
-}
-
-func (rf *Raft) logAppend(logs []LogEntrie) {
-	rf.log.append(logs)
-	rf.persist()
-}
-
-func (rf *Raft) logCutTo(index int) {
-	if err := rf.log.cutTo(index); err != nil {
-		rf.PortPrintf(err.Error())
-	} else {
-		rf.persist()
-	}
-}
-
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
