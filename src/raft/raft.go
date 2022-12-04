@@ -269,7 +269,6 @@ func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *
 	}
 	for wait := 0; !rf.peers[i].Call("Raft.AppendEntries", args, reply) && rf.currentTerm == args.Term && wait < 60; wait++ {
 		time.Sleep(time.Millisecond)
-		rf.PortPrintf("waiting...%d", i)
 	}
 
 	atomic.AddInt64(count, 1)
@@ -298,6 +297,7 @@ func (rf *Raft) sendHeartBeat() {
 		return
 	}
 	applyTo := rf.leaderCommit()
+	rf.PortPrintf("leaderCommit %d", rf.commitIndex)
 	go rf.persist()
 	latestTerm := rf.currentTerm
 	var sent int64 = 1
@@ -312,7 +312,7 @@ func (rf *Raft) sendHeartBeat() {
 	go func(sent *int64, accepted *int64, applyTo int) {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
-		for wait := 0; *sent < int64(rf.nPeers) && wait < 10; wait++ {
+		for wait := 0; *sent < int64(rf.nPeers) && wait < 30; wait++ {
 			time.Sleep(time.Millisecond)
 		}
 		if latestTerm > rf.currentTerm {
@@ -320,7 +320,7 @@ func (rf *Raft) sendHeartBeat() {
 			atomic.StoreInt64(&rf.currentTerm, latestTerm)
 			return
 		}
-		if *accepted > int64(rf.nPeers)/2 {
+		if *accepted > int64(rf.nPeers)/2 && rf.state == LEADER {
 			rf.PortPrintf("accepted %d", *accepted)
 			go rf.apply(applyTo)
 			return
@@ -344,7 +344,7 @@ func (rf *Raft) startElection() bool {
 		go rf.sendRequestVote(i, &RequestVoteReply{}, &votes)
 	}
 
-	for wait := 0; atomic.LoadInt64(&votes) <= int64(rf.nPeers/2) && wait < 15; wait++ {
+	for wait := 0; atomic.LoadInt64(&votes) <= int64(rf.nPeers/2) && wait < heartbeatConst; wait++ {
 		time.Sleep(time.Millisecond)
 	}
 	if atomic.LoadInt64(&votes) > int64(rf.nPeers/2) && atomic.CompareAndSwapInt32(&rf.state, CANDIDATE, LEADER) {
