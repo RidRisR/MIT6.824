@@ -60,7 +60,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if args.Term > reply.Term {
 		atomic.CompareAndSwapInt64(&rf.currentTerm, reply.Term, args.Term)
 		reply.Term = args.Term
-		rf.persist()
+		go rf.persist()
 		atomic.CompareAndSwapInt32(&rf.state, LEADER, FOLLOWER)
 	} else if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
 		rf.PortPrintf("have voted to %d", rf.votedFor)
@@ -81,8 +81,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.votedFor = args.CandidateId
 	reply.VoteGranted = true
 	go rf.resetTimer()
-	rf.persist()
-	// rf.PortPrintf("vote to %d", rf.votedFor)
+	go rf.persist()
+	rf.PortPrintf("vote to %d", rf.votedFor)
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {

@@ -113,7 +113,7 @@ func (rf *Raft) persist() {
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
-	e.Encode(rf.logSlice(0, -1))
+	e.Encode(rf.log.data)
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 }
@@ -290,7 +290,7 @@ func (rf *Raft) sendHeartBeat() {
 		return
 	}
 	applyTo := rf.leaderCommit()
-	rf.persist()
+	go rf.persist()
 	latestTerm := rf.currentTerm
 	var sent int64 = 1
 	var accepted int64 = 1
@@ -326,7 +326,7 @@ func (rf *Raft) startElection() bool {
 	// Assert(rf.state == CANDIDATE, "Wrong State")
 	currTerm := atomic.AddInt64(&rf.currentTerm, 1)
 	rf.votedFor = rf.me
-	rf.persist()
+	go rf.persist()
 	rf.PortPrintf("new election, term %d", currTerm)
 	var votes int64 = 1
 	for i := 0; i < rf.nPeers; i++ {
@@ -336,11 +336,12 @@ func (rf *Raft) startElection() bool {
 		go rf.sendRequestVote(i, &RequestVoteReply{}, &votes)
 	}
 
-	for wait := 0; votes <= int64(rf.nPeers/2) && wait < 6; wait++ {
+	for wait := 0; atomic.LoadInt64(&votes) <= int64(rf.nPeers/2) && wait < 6; wait++ {
+		rf.PortPrintf("vote %d", votes)
 		time.Sleep(time.Millisecond / 2)
 	}
-	if votes > int64(rf.nPeers/2) && atomic.CompareAndSwapInt32(&rf.state, CANDIDATE, LEADER) {
-		rf.PortPrintf("vote %d", votes)
+	if atomic.LoadInt64(&votes) > int64(rf.nPeers/2) && atomic.CompareAndSwapInt32(&rf.state, CANDIDATE, LEADER) {
+		rf.PortPrintf("try to move on %d", votes)
 		logLength := rf.logGetLen()
 		for i := 0; i < rf.nPeers; i++ {
 			atomic.StoreInt64(&rf.nextIndex[i], int64(logLength))
