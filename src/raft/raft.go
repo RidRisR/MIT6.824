@@ -266,7 +266,9 @@ func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *
 	if args.PrevLogIndex >= 0 {
 		args.PrevLogTerm = rf.logGetItem(args.PrevLogIndex).Term
 	}
-	rf.peers[i].Call("Raft.AppendEntries", args, reply)
+	for wait := 0; !rf.peers[i].Call("Raft.AppendEntries", args, reply) && wait < 30; wait++ {
+		time.Sleep(time.Millisecond)
+	}
 	atomic.AddInt64(count, 1)
 	if reply.Accepted {
 		atomic.AddInt64(accepted, 1)
@@ -277,7 +279,6 @@ func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *
 	}
 	if args.Term == reply.Term {
 		lastIndex, _ := rf.getLastConsensus(reply.LastIndex, reply.LastTerm)
-		// rf.PortPrintf("new consensus: %d,%d", lastIndex, lastTerm)
 		atomic.StoreInt64(&rf.nextIndex[i], int64(lastIndex)+1)
 	}
 	if reply.Term > atomic.LoadInt64(latestTerm) {
@@ -304,8 +305,8 @@ func (rf *Raft) sendHeartBeat() {
 	go func() {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
-		for wait := 0; sent < int64(rf.nPeers) && wait < 6; wait++ {
-			time.Sleep(time.Millisecond / 2)
+		for wait := 0; sent < int64(rf.nPeers) && wait < 10; wait++ {
+			time.Sleep(time.Millisecond)
 		}
 		if latestTerm > rf.currentTerm {
 			atomic.StoreInt32(&rf.state, FOLLOWER)
@@ -336,9 +337,9 @@ func (rf *Raft) startElection() bool {
 		go rf.sendRequestVote(i, &RequestVoteReply{}, &votes)
 	}
 
-	for wait := 0; atomic.LoadInt64(&votes) <= int64(rf.nPeers/2) && wait < 6; wait++ {
+	for wait := 0; atomic.LoadInt64(&votes) <= int64(rf.nPeers/2) && wait < 10; wait++ {
 		rf.PortPrintf("vote %d", votes)
-		time.Sleep(time.Millisecond / 2)
+		time.Sleep(time.Millisecond)
 	}
 	if atomic.LoadInt64(&votes) > int64(rf.nPeers/2) && atomic.CompareAndSwapInt32(&rf.state, CANDIDATE, LEADER) {
 		rf.PortPrintf("try to move on %d", votes)

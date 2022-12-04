@@ -114,7 +114,6 @@ func (rf *Raft) logAppend(logs []LogEntrie) {
 }
 
 func (rf *Raft) getLastConsensus(index int, term int64) (lastIndex int, lastTerm int64) {
-	rf.PortPrintf("consensus: %d,%d", index, term)
 	return rf.log.getLastConsensus(index, term)
 }
 
