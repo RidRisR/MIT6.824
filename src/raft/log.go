@@ -11,15 +11,23 @@ type Log struct {
 	len  int
 }
 
-func (l *Log) append(logs []LogEntrie) {
+func (l *Log) append(logs []LogEntrie) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	modified := false
 	for _, log := range logs {
 		if log.Index == l.len {
 			l.data = append(l.data, log)
 			l.len++
+			continue
+		}
+		if log.Command != l.data[log.Index].Command {
+			l.data = l.data[:log.Index]
+			l.data = append(l.data, log)
+			l.len = log.Index + 1
 		}
 	}
+	return modified
 }
 
 func (l *Log) cutTo(index int) error {
@@ -98,8 +106,9 @@ func (rf *Raft) logGetItem(index int) LogEntrie {
 }
 
 func (rf *Raft) logAppend(logs []LogEntrie) {
-	rf.log.append(logs)
-	rf.persist()
+	if rf.log.append(logs) {
+		rf.persist()
+	}
 }
 
 func (rf *Raft) logCutTo(index int) {

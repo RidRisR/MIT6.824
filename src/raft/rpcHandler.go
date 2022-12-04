@@ -60,6 +60,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if args.Term > reply.Term {
 		atomic.CompareAndSwapInt64(&rf.currentTerm, reply.Term, args.Term)
 		reply.Term = args.Term
+		rf.persist()
 		atomic.StoreInt32(&rf.state, FOLLOWER)
 	} else if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
 		rf.PortPrintf("have voted to %d", rf.votedFor)
@@ -83,15 +84,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 	reply.Term = rf.currentTerm
 	reply.Accepted = false
-	//1. Reply false if term < currentTerm (§5.1)
-	//2. Reply false if log doesn’t contain an entry at prevLogIndex
-	//whose term matches prevLogTerm (§5.3)
-	//3. If an existing entry conflicts with a new one (same index
-	//but different terms), delete the existing entry and all that
-	//follow it (§5.3)
-	//4. Append any new entries not already in the log
-	//5. If leaderCommit > commitIndex, set commitIndex =
-	//min(leaderCommit, index of last new entry)
 	if args.Term < reply.Term {
 		// rf.PortPrintf("wrong term %d,%d", args.Term, reply.Term)
 		return
@@ -105,25 +97,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.PortPrintf("no consensus %d,%d != %d,%d", args.PrevLogIndex, args.PrevLogTerm, reply.LastIndex, reply.LastTerm)
 		return
 	}
-	rf.PortPrintf("consensus")
-
-	// if (rf.logGetLen())-1 < args.PrevLogIndex {
-	// 	rf.PortPrintf("wrong index %d>%d", args.PrevLogIndex, rf.logGetLen()-1)
-	// 	return
-	// }
-
-	// if args.PrevLogIndex >= 0 && rf.logGetItem(args.PrevLogIndex).Term != args.PrevLogTerm {
-	// 	rf.PortPrintf("wrong log term %d,%d,%d", args.PrevLogIndex, args.PrevLogTerm, rf.logGetItem(args.PrevLogIndex).Term)
-	// 	return
-	// }
-
-	if (rf.logGetLen()) > (args.PrevLogIndex+1) && rf.logGetItem(args.PrevLogIndex+1).Term != args.Term {
-		if args.PrevLogIndex >= 0 {
-			rf.logCutTo(args.PrevLogIndex + 1)
-		} else {
-			rf.logCutTo(0)
-		}
-	}
+	rf.PortPrintf("consensus %d,%d = %d,%d", args.PrevLogIndex, args.PrevLogTerm, reply.LastIndex, reply.LastTerm)
 
 	if args.Type == LOG {
 		rf.logAppend(args.Entries)
