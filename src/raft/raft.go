@@ -285,7 +285,7 @@ func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *
 		if args.Type == LOG {
 			matchIndex = args.Entries[len(args.Entries)-1].Index
 		}
-		if matchIndex > int(atomic.LoadInt64(&rf.nextIndex[i])) {
+		if matchIndex > int(atomic.LoadInt64(&rf.matchIndex[i])) {
 			atomic.StoreInt64(&rf.nextIndex[i], int64(matchIndex+1))
 			atomic.StoreInt64(&rf.matchIndex[i], int64(matchIndex))
 		}
@@ -320,7 +320,7 @@ func (rf *Raft) sendHeartBeat() {
 	go func(sent *int64, accepted *int64, applyTo int) {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
-		for wait := 0; *sent < int64(rf.nPeers) && wait < 20; wait++ {
+		for wait := 0; *sent <= int64(rf.nPeers) && wait < 10; wait++ {
 			time.Sleep(time.Millisecond)
 			if latestTerm > rf.currentTerm {
 				atomic.StoreInt32(&rf.state, FOLLOWER)
@@ -328,7 +328,7 @@ func (rf *Raft) sendHeartBeat() {
 			}
 		}
 		if *accepted > int64(rf.nPeers)/2 && rf.state == LEADER {
-			rf.PortPrintf("accepted %d", *accepted)
+			rf.PortPrintf("accepted %d, %d", *accepted, applyTo)
 			go rf.apply(applyTo)
 			return
 		}
@@ -351,7 +351,7 @@ func (rf *Raft) startElection() bool {
 		go rf.sendRequestVote(i, &RequestVoteReply{}, &votes)
 	}
 
-	for wait := 0; atomic.LoadInt64(&votes) <= int64(rf.nPeers/2) && wait < 20; wait++ {
+	for wait := 0; atomic.LoadInt64(&votes) <= int64(rf.nPeers/2) && wait < 10; wait++ {
 		time.Sleep(time.Millisecond)
 	}
 	if atomic.LoadInt64(&votes) > int64(rf.nPeers/2) && atomic.CompareAndSwapInt32(&rf.state, CANDIDATE, LEADER) {
@@ -459,7 +459,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votedFor = -1
 	rf.state = FOLLOWER
 	rf.heartbeatTimeout = heartbeatConst * time.Millisecond
-	rf.electionTimeout = time.Duration(rand.Intn(heartbeatConst*10)+heartbeatConst*5) * time.Millisecond
+	rf.electionTimeout = time.Duration(rand.Intn(heartbeatConst*15)+heartbeatConst*5) * time.Millisecond
 
 	// Your initialization code here (2A, 2B, 2C).
 
