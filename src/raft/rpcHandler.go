@@ -35,7 +35,7 @@ type AppendEntriesArgs struct {
 
 type AppendEntriesReply struct {
 	Index     int
-	peer      int
+	Peer      int
 	Term      int64
 	Accepted  bool
 	LastTerm  int64
@@ -79,6 +79,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.PortPrintf("not longest log")
 			return
 		}
+		rf.PortPrintf("log compare %d: %d,%d (%d) = %d,%d", args.CandidateId, args.LastLogIndex, args.LastLogTerm, args.Term, args.LastLogIndex, lastLog.Term)
+
 	}
 
 	rf.votedFor = args.CandidateId
@@ -92,16 +94,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 	defer rf.persist()
 	reply.Term = rf.currentTerm
-	reply.peer = rf.me
+	reply.Peer = rf.me
 	reply.Index = args.Index
 	reply.Accepted = false
 
 	if args.Term < reply.Term {
-		// rf.PortPrintf("wrong term %d,%d", args.Term, reply.Term)
+		// rf.PortPrintf("wrong term %d,%d :%d", args.Term, reply.Term, args.LeaderId)
 		return
 	}
-
-	if rf.state != FOLLOWER || rf.currentTerm != args.Term {
+	// rf.PortPrintf("term %d,%d :%d", args.Term, reply.Term, args.LeaderId)
+	if rf.state != FOLLOWER && rf.currentTerm < args.Term {
 		atomic.StoreInt32(&rf.state, FOLLOWER)
 		atomic.StoreInt64(&rf.currentTerm, args.Term)
 	}
@@ -151,7 +153,7 @@ func (rf *Raft) apply(end int) {
 
 func (rf *Raft) waitForApply() {
 	for end := range rf.applyOpCh {
-		rf.PortPrintf("end %d", end)
+		// rf.PortPrintf("end %d", end)
 		if rf.lastAppliedIndex >= end {
 			continue
 		}

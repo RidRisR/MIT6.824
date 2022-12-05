@@ -258,7 +258,7 @@ func (rf *Raft) handleAppendEntries(reply *AppendEntriesReply) {
 	if reply.Term < rf.currentTerm {
 		return
 	}
-	i := reply.peer
+	i := reply.Peer
 	if reply.Accepted {
 		if reply.LastIndex > rf.matchIndex[i] {
 			rf.nextIndex[i] = reply.LastIndex + 1
@@ -383,8 +383,8 @@ func (rf *Raft) ticker() {
 		// be started and to randomize sleeping time using
 		// time.Sleep().
 		if rf.state == LEADER {
-			rf.mu.Lock()
 			time.Sleep(rf.heartbeatTimeout)
+			rf.mu.Lock()
 			latestTerm := rf.currentTerm
 			flag := false
 			for {
@@ -398,16 +398,17 @@ func (rf *Raft) ticker() {
 					break
 				}
 			}
-			toCommit := rf.leaderCommit()
-			go rf.apply(toCommit)
+			toApply := rf.leaderCommit()
+			go rf.apply(toApply)
 			go rf.persist()
-			if latestTerm > rf.currentTerm {
+			if latestTerm <= rf.currentTerm {
+				rf.heartbeatIndex++
+				rf.sendHeartBeat(rf.heartbeatIndex)
+			} else {
 				atomic.StoreInt32(&rf.state, FOLLOWER)
 				atomic.StoreInt64(&rf.currentTerm, latestTerm)
-				continue
+				rf.PortPrintf("hii %d", rf.heartbeatIndex)
 			}
-			rf.heartbeatIndex++
-			rf.sendHeartBeat(rf.heartbeatIndex)
 			rf.mu.Unlock()
 		}
 		if rf.state != LEADER {
