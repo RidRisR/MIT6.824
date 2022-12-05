@@ -23,6 +23,7 @@ type RequestVoteReply struct {
 }
 
 type AppendEntriesArgs struct {
+	Index        int
 	Type         string
 	Term         int64
 	LeaderId     int
@@ -33,6 +34,8 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
+	Index     int
+	peer      int
 	Term      int64
 	Accepted  bool
 	LastTerm  int64
@@ -89,6 +92,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 	defer rf.persist()
 	reply.Term = rf.currentTerm
+	reply.peer = rf.me
+	reply.Index = args.Index
 	reply.Accepted = false
 
 	if args.Term < reply.Term {
@@ -111,6 +116,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	if args.Type == LOG {
 		rf.logAppend(args.Entries)
+		lastItem := rf.logGetItem(-1)
+		reply.LastIndex = lastItem.Index
+		reply.LastTerm = lastItem.Term
 	}
 	reply.Accepted = true
 	rf.updateCommit(args.LeaderCommit)
@@ -134,7 +142,7 @@ func (rf *Raft) updateCommit(leaderCommit int) {
 }
 
 func (rf *Raft) resetTimer() {
-	rf.msgCh <- 0
+	rf.msgCh <- AppendEntriesReply{}
 }
 
 func (rf *Raft) apply(end int) {

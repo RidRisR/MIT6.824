@@ -80,16 +80,17 @@ type Raft struct {
 	//volatile
 	commitIndex      int
 	lastAppliedIndex int
-	msgCh            chan int64
+	msgCh            chan AppendEntriesReply
 	applyOpCh        chan int
 	applyCh          chan ApplyMsg
 	heartbeatTimeout time.Duration
 	electionTimeout  time.Duration
 	state            int32
+	heartbeatIndex   int
 
 	//volatile for leader
-	nextIndex  []int64
-	matchIndex []int64
+	nextIndex  []int
+	matchIndex []int
 }
 
 // return currentTerm and whether this server
@@ -235,7 +236,7 @@ func (rf *Raft) leaderCommit() int {
 			if j == rf.me {
 				continue
 			}
-			if int(atomic.LoadInt64(&rf.matchIndex[j])) >= log.Index {
+			if rf.matchIndex[j] >= log.Index {
 				count++
 			}
 		}
@@ -253,42 +254,35 @@ func (rf *Raft) leaderCommit() int {
 	return toCommit + oldCommitIndex + 1
 }
 
-func (rf *Raft) handleAppendEntries(i int, args *AppendEntriesArgs, reply *AppendEntriesReply, ch *chan bool) {
-	<-*ch
-	if rf.currentTerm != args.Term {
-		// rf.PortPrintf("call end%d (%d != %d?)", i, rf.currentTerm, reply.Term)
+func (rf *Raft) handleAppendEntries(reply *AppendEntriesReply) {
+	if reply.Term < rf.currentTerm {
 		return
 	}
+	i := reply.peer
 	if reply.Accepted {
-		matchIndex := args.PrevLogIndex
-		if args.Type == LOG && rf.state == LEADER {
-			matchIndex = args.Entries[len(args.Entries)-1].Index
-		}
-		if matchIndex > int(atomic.LoadInt64(&rf.matchIndex[i])) {
-			atomic.StoreInt64(&rf.nextIndex[i], int64(matchIndex+1))
-			atomic.StoreInt64(&rf.matchIndex[i], int64(matchIndex))
+		if reply.LastIndex > rf.matchIndex[i] {
+			rf.nextIndex[i] = reply.LastIndex + 1
+			rf.matchIndex[i] = reply.LastIndex
 		}
 		return
 	}
-	if rf.currentTerm == reply.Term && rf.state == LEADER {
-		lastIndex, lastTerm := rf.getLastConsensus(reply.LastIndex, reply.LastTerm)
-		rf.PortPrintf("new consensus%d %d,%d!= %d,%d", i, reply.LastIndex, reply.LastTerm, lastIndex, lastTerm)
-		atomic.StoreInt64(&rf.nextIndex[i], int64(lastIndex)+1)
-	} else if reply.Term > rf.currentTerm {
-		rf.msgCh <- reply.Term
+	if reply.LastIndex > rf.matchIndex[i] {
+		lastIndex, _ := rf.getLastConsensus(reply.LastIndex, reply.LastTerm)
+		// rf.PortPrintf("new consensus%d %d,%d!= %d,%d", i, reply.LastIndex, reply.LastTerm, lastIndex, lastTerm)
+		rf.nextIndex[i] = lastIndex + 1
 	}
 }
 
-func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *int64, count *int64, accepted *int64) {
-	ch := make(chan bool)
+func (rf *Raft) sendAppendEntries(i int, peer int, reply *AppendEntriesReply) {
 	args := &AppendEntriesArgs{
+		Index:        i,
 		Type:         HEARTBEAT,
 		Term:         rf.currentTerm,
 		LeaderId:     rf.me,
 		LeaderCommit: rf.commitIndex,
 		PrevLogIndex: rf.logGetLen() - 1,
 	}
-	nextIndex := atomic.LoadInt64(&rf.nextIndex[i])
+	nextIndex := rf.nextIndex[peer]
 	if rf.logGetLen()-1 >= int(nextIndex) {
 		args.Type = LOG
 		args.Entries = rf.logSlice(int(nextIndex), -1)
@@ -297,46 +291,21 @@ func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *
 	if args.PrevLogIndex >= 0 {
 		args.PrevLogTerm = rf.logGetItem(args.PrevLogIndex).Term
 	}
-	go rf.handleAppendEntries(i, args, reply, &ch)
-	if !rf.peers[i].Call("Raft.AppendEntries", args, reply) {
-		return
-	}
-	if reply.Accepted {
-		atomic.AddInt64(accepted, 1)
-	}
-	if rf.currentTerm == args.Term {
-		ch <- true
-		atomic.AddInt64(count, 1)
+	if rf.peers[peer].Call("Raft.AppendEntries", args, reply) {
+		rf.msgCh <- *reply
 	}
 }
 
-func (rf *Raft) sendHeartBeat() {
+func (rf *Raft) sendHeartBeat(i int) {
 	if rf.state != LEADER {
 		return
 	}
-	applyTo := rf.leaderCommit()
-	rf.PortPrintf("leaderCommit %d", rf.commitIndex)
-	go rf.persist()
-	latestTerm := rf.currentTerm
-	var sent int64 = 1
-	var accepted int64 = 1
-	for i := 0; i < rf.nPeers; i++ {
-		if i == rf.me {
+	for j := 0; j < rf.nPeers; j++ {
+		if j == rf.me {
 			continue
 		}
-		go rf.sendAppendEntries(i, &AppendEntriesReply{}, &latestTerm, &sent, &accepted)
-
+		go rf.sendAppendEntries(i, j, &AppendEntriesReply{})
 	}
-	go func(sent *int64, accepted *int64, applyTo int) {
-		rf.mu.Lock()
-		defer rf.mu.Unlock()
-		if *accepted > int64(rf.nPeers)/2 && rf.state == LEADER {
-			rf.PortPrintf("accepted %d, %d", *accepted, applyTo)
-			go rf.apply(applyTo)
-			return
-		}
-
-	}(&sent, &accepted, applyTo)
 }
 
 func (rf *Raft) startElection() bool {
@@ -360,8 +329,8 @@ func (rf *Raft) startElection() bool {
 	if atomic.LoadInt64(&votes) > int64(rf.nPeers/2) && atomic.CompareAndSwapInt32(&rf.state, CANDIDATE, LEADER) {
 		logLength := rf.logGetLen()
 		for i := 0; i < rf.nPeers; i++ {
-			atomic.StoreInt64(&rf.nextIndex[i], int64(logLength))
-			atomic.StoreInt64(&rf.matchIndex[i], -1)
+			rf.nextIndex[i] = logLength
+			rf.matchIndex[i] = -1
 		}
 		rf.PortPrintf("become the new leader")
 
@@ -414,22 +383,31 @@ func (rf *Raft) ticker() {
 		// be started and to randomize sleeping time using
 		// time.Sleep().
 		if rf.state == LEADER {
+			rf.mu.Lock()
+			time.Sleep(rf.heartbeatTimeout)
 			latestTerm := rf.currentTerm
-			select {
-			case e := <-rf.msgCh:
-				if e > latestTerm {
-					latestTerm = e
+			flag := false
+			for {
+				select {
+				case reply := <-rf.msgCh:
+					rf.handleAppendEntries(&reply)
+				default:
+					flag = true
 				}
-			default:
+				if flag {
+					break
+				}
 			}
+			toCommit := rf.leaderCommit()
+			go rf.apply(toCommit)
+			go rf.persist()
 			if latestTerm > rf.currentTerm {
 				atomic.StoreInt32(&rf.state, FOLLOWER)
 				atomic.StoreInt64(&rf.currentTerm, latestTerm)
 				continue
 			}
-			time.Sleep(rf.heartbeatTimeout)
-			rf.mu.Lock()
-			rf.sendHeartBeat()
+			rf.heartbeatIndex++
+			rf.sendHeartBeat(rf.heartbeatIndex)
 			rf.mu.Unlock()
 		}
 		if rf.state != LEADER {
@@ -438,7 +416,9 @@ func (rf *Raft) ticker() {
 				// rf.PortPrintf("lost connect with leader, term %d", rf.currentTerm)
 				rf.mu.Lock()
 				if rf.startElection() {
-					rf.sendHeartBeat()
+					rf.heartbeatIndex = 0
+					rf.sendHeartBeat(0)
+
 				}
 				rf.mu.Unlock()
 			case <-rf.msgCh:
@@ -463,15 +443,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf := &Raft{}
 	rf.peers = peers
 	rf.nPeers = len(peers)
-	rf.nextIndex = make([]int64, rf.nPeers)
-	rf.matchIndex = make([]int64, rf.nPeers)
+	rf.nextIndex = make([]int, rf.nPeers)
+	rf.matchIndex = make([]int, rf.nPeers)
 	rf.commitIndex = -1
 	rf.lastAppliedIndex = -1
 	rf.persister = persister
 	rf.me = me
 	rf.applyOpCh = make(chan int, 10)
 	rf.applyCh = applyCh
-	rf.msgCh = make(chan int64, rf.nPeers*2)
+	rf.msgCh = make(chan AppendEntriesReply, rf.nPeers*2)
 	rf.votedFor = -1
 	rf.state = FOLLOWER
 	rf.heartbeatTimeout = heartbeatConst * time.Millisecond
