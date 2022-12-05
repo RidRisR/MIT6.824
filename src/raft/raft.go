@@ -281,12 +281,14 @@ func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *
 	}
 	if reply.Accepted {
 		atomic.AddInt64(accepted, 1)
-		matchLength := args.PrevLogIndex
+		matchIndex := args.PrevLogIndex
 		if args.Type == LOG {
-			matchLength = args.Entries[len(args.Entries)-1].Index
+			matchIndex = args.Entries[len(args.Entries)-1].Index
 		}
-		atomic.StoreInt64(&rf.nextIndex[i], int64(matchLength+1))
-		atomic.StoreInt64(&rf.matchIndex[i], int64(matchLength))
+		if matchIndex > int(atomic.LoadInt64(&rf.nextIndex[i])) {
+			atomic.StoreInt64(&rf.nextIndex[i], int64(matchIndex+1))
+			atomic.StoreInt64(&rf.matchIndex[i], int64(matchIndex))
+		}
 		return
 	}
 	if rf.currentTerm == reply.Term {
