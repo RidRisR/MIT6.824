@@ -110,7 +110,7 @@ func (rf *Raft) logGetItem(index int) LogEntrie {
 
 func (rf *Raft) logAppend(logs []LogEntrie) {
 	rf.log.append(logs)
-	rf.persist()
+	// rf.persist()
 }
 
 func (rf *Raft) getLastConsensus(index int, term int64) (lastIndex int, lastTerm int64) {

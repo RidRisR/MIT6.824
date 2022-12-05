@@ -1,9 +1,5 @@
 package raft
 
-import (
-	"sync/atomic"
-)
-
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 type RequestVoteArgs struct {
@@ -62,10 +58,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	if args.Term > reply.Term {
-		atomic.CompareAndSwapInt64(&rf.currentTerm, reply.Term, args.Term)
+		rf.currentTerm = args.Term
 		reply.Term = args.Term
-		atomic.CompareAndSwapInt32(&rf.state, LEADER, FOLLOWER)
-	} else if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
+		rf.state = FOLLOWER
+	} else if rf.votedFor != -1 && int(rf.votedFor) != args.CandidateId {
 		rf.PortPrintf("have voted to %d", rf.votedFor)
 		return
 	}
@@ -83,7 +79,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	}
 
-	rf.votedFor = args.CandidateId
+	rf.votedFor = int64(args.CandidateId)
 	reply.VoteGranted = true
 	go rf.resetTimer()
 	rf.PortPrintf("vote to %d", rf.votedFor)
@@ -104,8 +100,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	// rf.PortPrintf("term %d,%d :%d", args.Term, reply.Term, args.LeaderId)
 	if rf.currentTerm < args.Term {
-		atomic.StoreInt32(&rf.state, FOLLOWER)
-		atomic.StoreInt64(&rf.currentTerm, args.Term)
+		rf.state = FOLLOWER
+		rf.currentTerm = args.Term
+		reply.Term = args.Term
 	}
 	go rf.resetTimer()
 
@@ -118,7 +115,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	if args.Type == LOG {
 		rf.logAppend(args.Entries)
-		lastItem := rf.logGetItem(-1)
+		lastItem := args.Entries[len(args.Entries)-1]
 		reply.LastIndex = lastItem.Index
 		reply.LastTerm = lastItem.Term
 		rf.PortPrintf("new item: %d,%d", reply.LastIndex, reply.LastTerm)

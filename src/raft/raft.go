@@ -74,7 +74,7 @@ type Raft struct {
 	// state a Raft server must maintain.
 	nPeers      int
 	currentTerm int64
-	votedFor    int
+	votedFor    int64
 	log         Log
 
 	//volatile
@@ -112,9 +112,11 @@ func (rf *Raft) persist() {
 	// Example:
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
-	e.Encode(rf.currentTerm)
-	e.Encode(rf.votedFor)
+	e.Encode(atomic.LoadInt64(&rf.currentTerm))
+	e.Encode(atomic.LoadInt64(&rf.votedFor))
+	rf.log.mu.Lock()
 	e.Encode(rf.log.data)
+	rf.log.mu.Unlock()
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 }
@@ -188,7 +190,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 func (rf *Raft) sendRequestVote(server int, reply *RequestVoteReply, votes *int64) {
 	args := &RequestVoteArgs{
 		CandidateId:  rf.me,
-		Term:         rf.currentTerm,
+		Term:         atomic.LoadInt64(&rf.currentTerm),
 		LastLogIndex: rf.logGetLen() - 1,
 	}
 	if args.LastLogIndex >= 0 {
@@ -280,7 +282,7 @@ func (rf *Raft) sendAppendEntries(i int, peer int, reply *AppendEntriesReply) {
 	args := &AppendEntriesArgs{
 		Index:        i,
 		Type:         HEARTBEAT,
-		Term:         rf.currentTerm,
+		Term:         atomic.LoadInt64(&rf.currentTerm),
 		LeaderId:     rf.me,
 		LeaderCommit: rf.commitIndex,
 		PrevLogIndex: rf.logGetLen() - 1,
@@ -312,12 +314,12 @@ func (rf *Raft) sendHeartBeat(i int) {
 }
 
 func (rf *Raft) startElection() bool {
-	atomic.CompareAndSwapInt32(&rf.state, FOLLOWER, CANDIDATE)
+	rf.state = CANDIDATE
 	// Assert(rf.state == CANDIDATE, "Wrong State")
-	currTerm := atomic.AddInt64(&rf.currentTerm, 1)
-	rf.votedFor = rf.me
+	rf.currentTerm++
+	rf.votedFor = int64(rf.me)
 	go rf.persist()
-	rf.PortPrintf("new election, term %d", currTerm)
+	rf.PortPrintf("new election, term %d", rf.currentTerm)
 	var votes int64 = 1
 	for i := 0; i < rf.nPeers; i++ {
 		if i == rf.me {
@@ -329,7 +331,8 @@ func (rf *Raft) startElection() bool {
 	for wait := 0; atomic.LoadInt64(&votes) <= int64(rf.nPeers/2) && wait < 15; wait++ {
 		time.Sleep(time.Millisecond)
 	}
-	if atomic.LoadInt64(&votes) > int64(rf.nPeers/2) && atomic.CompareAndSwapInt32(&rf.state, CANDIDATE, LEADER) {
+	if atomic.LoadInt64(&votes) > int64(rf.nPeers/2) {
+		rf.state = LEADER
 		logLength := rf.logGetLen()
 		for i := 0; i < rf.nPeers; i++ {
 			rf.nextIndex[i] = logLength
@@ -385,7 +388,7 @@ func (rf *Raft) ticker() {
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
 		// time.Sleep().
-		if rf.state == LEADER {
+		if atomic.LoadInt32(&rf.state) == LEADER {
 			time.Sleep(rf.heartbeatTimeout)
 			rf.mu.Lock()
 			latestTerm := rf.currentTerm
@@ -409,8 +412,8 @@ func (rf *Raft) ticker() {
 				rf.heartbeatIndex++
 				rf.sendHeartBeat(rf.heartbeatIndex)
 			} else {
-				atomic.StoreInt32(&rf.state, FOLLOWER)
-				atomic.StoreInt64(&rf.currentTerm, latestTerm)
+				rf.state = FOLLOWER
+				rf.currentTerm = latestTerm
 				rf.PortPrintf("hii %d", rf.heartbeatIndex)
 			}
 			rf.mu.Unlock()
