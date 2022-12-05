@@ -320,7 +320,7 @@ func (rf *Raft) sendHeartBeat() {
 	go func(sent *int64, accepted *int64, applyTo int) {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
-		for wait := 0; *sent < int64(rf.nPeers) && wait < 30; wait++ {
+		for wait := 0; *sent < int64(rf.nPeers) && wait < 20; wait++ {
 			time.Sleep(time.Millisecond)
 			if latestTerm > rf.currentTerm {
 				atomic.StoreInt32(&rf.state, FOLLOWER)
@@ -351,7 +351,7 @@ func (rf *Raft) startElection() bool {
 		go rf.sendRequestVote(i, &RequestVoteReply{}, &votes)
 	}
 
-	for wait := 0; atomic.LoadInt64(&votes) <= int64(rf.nPeers/2) && wait < heartbeatConst; wait++ {
+	for wait := 0; atomic.LoadInt64(&votes) <= int64(rf.nPeers/2) && wait < 20; wait++ {
 		time.Sleep(time.Millisecond)
 	}
 	if atomic.LoadInt64(&votes) > int64(rf.nPeers/2) && atomic.CompareAndSwapInt32(&rf.state, CANDIDATE, LEADER) {
