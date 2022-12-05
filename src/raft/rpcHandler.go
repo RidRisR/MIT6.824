@@ -138,21 +138,26 @@ func (rf *Raft) resetTimer() {
 }
 
 func (rf *Raft) apply(end int) {
-	rf.applyMu.Lock()
-	defer rf.applyMu.Unlock()
-	if rf.lastAppliedIndex >= end {
-		return
-	}
-	if rf.logGetLen()-1 < end {
-		rf.PortPrintf("wrong end %d,%d", rf.logGetLen()-1, end)
-	}
-	for _, log := range rf.logSlice(rf.lastAppliedIndex+1, end+1) {
-		rf.PortPrintf("commit: %d,%v", log.Index, log.Command)
-		rf.applyCh <- ApplyMsg{
-			CommandValid: true,
-			Command:      log.Command,
-			CommandIndex: log.Index + 1,
+	rf.applyOpCh <- end
+}
+
+func (rf *Raft) waitForApply() {
+	for end := range rf.applyOpCh {
+		rf.PortPrintf("end %d", end)
+		if rf.lastAppliedIndex >= end {
+			continue
 		}
+		if rf.logGetLen()-1 < end {
+			rf.PortPrintf("wrong end %d,%d", rf.logGetLen()-1, end)
+		}
+		for _, log := range rf.logSlice(rf.lastAppliedIndex+1, end+1) {
+			rf.PortPrintf("commit: %d,%v", log.Index, log.Command)
+			rf.applyCh <- ApplyMsg{
+				CommandValid: true,
+				Command:      log.Command,
+				CommandIndex: log.Index + 1,
+			}
+		}
+		rf.lastAppliedIndex = end
 	}
-	rf.lastAppliedIndex = end
 }

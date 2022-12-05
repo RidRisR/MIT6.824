@@ -30,7 +30,7 @@ const (
 var rolePrint = []string{"LDR", "FOW", "CAN"}
 
 // Debugging
-const Debug = false
+const Debug = true
 
 func DPrintf(role int32, index int, format string, a ...interface{}) (n int, err error) {
 	if Debug {

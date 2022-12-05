@@ -81,7 +81,7 @@ type Raft struct {
 	commitIndex      int
 	lastAppliedIndex int
 	msgCh            chan LogEntrie
-	applyMu          sync.Mutex
+	applyOpCh        chan int
 	applyCh          chan ApplyMsg
 	heartbeatTimeout time.Duration
 	electionTimeout  time.Duration
@@ -253,27 +253,8 @@ func (rf *Raft) leaderCommit() int {
 	return toCommit + oldCommitIndex + 1
 }
 
-func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *int64, count *int64, accepted *int64) {
-	args := &AppendEntriesArgs{
-		Type:         HEARTBEAT,
-		Term:         rf.currentTerm,
-		LeaderId:     rf.me,
-		LeaderCommit: rf.commitIndex,
-		PrevLogIndex: rf.logGetLen() - 1,
-	}
-	nextIndex := atomic.LoadInt64(&rf.nextIndex[i])
-	if rf.logGetLen()-1 >= int(nextIndex) {
-		args.Type = LOG
-		args.Entries = rf.logSlice(int(nextIndex), -1)
-		args.PrevLogIndex = int(nextIndex) - 1
-	}
-	if args.PrevLogIndex >= 0 {
-		args.PrevLogTerm = rf.logGetItem(args.PrevLogIndex).Term
-	}
-	for wait := 0; !rf.peers[i].Call("Raft.AppendEntries", args, reply) && rf.currentTerm == args.Term && wait < 60; wait++ {
-		time.Sleep(time.Millisecond)
-	}
-
+func (rf *Raft) handleAppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply, ch *chan bool) {
+	<-*ch
 	atomic.AddInt64(count, 1)
 	if rf.currentTerm != args.Term {
 		// rf.PortPrintf("call end%d (%d != %d?)", i, rf.currentTerm, reply.Term)
@@ -298,6 +279,30 @@ func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *
 	} else if reply.Term > atomic.LoadInt64(latestTerm) {
 		atomic.StoreInt64(latestTerm, reply.Term)
 	}
+}
+
+func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *int64, count *int64, accepted *int64) {
+	args := &AppendEntriesArgs{
+		Type:         HEARTBEAT,
+		Term:         rf.currentTerm,
+		LeaderId:     rf.me,
+		LeaderCommit: rf.commitIndex,
+		PrevLogIndex: rf.logGetLen() - 1,
+	}
+	nextIndex := atomic.LoadInt64(&rf.nextIndex[i])
+	if rf.logGetLen()-1 >= int(nextIndex) {
+		args.Type = LOG
+		args.Entries = rf.logSlice(int(nextIndex), -1)
+		args.PrevLogIndex = int(nextIndex) - 1
+	}
+	if args.PrevLogIndex >= 0 {
+		args.PrevLogTerm = rf.logGetItem(args.PrevLogIndex).Term
+	}
+	ch := make(chan bool)
+	if rf.peers[i].Call("Raft.AppendEntries", args, reply) && rf.currentTerm == args.Term {
+		ch <- true
+	}
+	go rf.handleAppendEntries(args, reply, ch)
 }
 
 func (rf *Raft) sendHeartBeat() {
@@ -351,7 +356,7 @@ func (rf *Raft) startElection() bool {
 		go rf.sendRequestVote(i, &RequestVoteReply{}, &votes)
 	}
 
-	for wait := 0; atomic.LoadInt64(&votes) <= int64(rf.nPeers/2) && wait < 10; wait++ {
+	for wait := 0; atomic.LoadInt64(&votes) <= int64(rf.nPeers/2) && wait < 15; wait++ {
 		time.Sleep(time.Millisecond)
 	}
 	if atomic.LoadInt64(&votes) > int64(rf.nPeers/2) && atomic.CompareAndSwapInt32(&rf.state, CANDIDATE, LEADER) {
@@ -454,6 +459,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastAppliedIndex = -1
 	rf.persister = persister
 	rf.me = me
+	rf.applyOpCh = make(chan int, 10)
 	rf.applyCh = applyCh
 	rf.msgCh = make(chan LogEntrie)
 	rf.votedFor = -1
@@ -468,6 +474,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.PortPrintf("port ready")
 
 	// start ticker goroutine to start elections
+	go rf.waitForApply()
 	go rf.ticker()
 
 	return rf
