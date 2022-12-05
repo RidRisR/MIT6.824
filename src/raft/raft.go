@@ -223,6 +223,9 @@ func (rf *Raft) leaderCommit() int {
 	if rf.logGetLen() == 0 {
 		return -1
 	}
+	if rf.commitIndex+1 > rf.logGetLen() {
+		rf.PortPrintf("!!!!! %d", rf.commitIndex)
+	}
 	uncommitted := rf.logSlice(rf.commitIndex+1, -1)
 	oldCommitIndex := rf.commitIndex
 	toCommit := -1
@@ -278,9 +281,12 @@ func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *
 	}
 	if reply.Accepted {
 		atomic.AddInt64(accepted, 1)
-		logLength := rf.logGetLen()
-		atomic.StoreInt64(&rf.nextIndex[i], int64(logLength))
-		atomic.StoreInt64(&rf.matchIndex[i], int64(logLength-1))
+		matchLength := args.PrevLogIndex
+		if args.Type == LOG {
+			matchLength = args.Entries[len(args.Entries)-1].Index
+		}
+		atomic.StoreInt64(&rf.nextIndex[i], int64(matchLength+1))
+		atomic.StoreInt64(&rf.matchIndex[i], int64(matchLength))
 		return
 	}
 	if rf.currentTerm == reply.Term {
