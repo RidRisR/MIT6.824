@@ -103,7 +103,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	// rf.PortPrintf("term %d,%d :%d", args.Term, reply.Term, args.LeaderId)
-	if rf.state != FOLLOWER && rf.currentTerm < args.Term {
+	if rf.currentTerm < args.Term {
 		atomic.StoreInt32(&rf.state, FOLLOWER)
 		atomic.StoreInt64(&rf.currentTerm, args.Term)
 	}
@@ -121,6 +121,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		lastItem := rf.logGetItem(-1)
 		reply.LastIndex = lastItem.Index
 		reply.LastTerm = lastItem.Term
+		rf.PortPrintf("new item: %d,%d", reply.LastIndex, reply.LastTerm)
 	}
 	reply.Accepted = true
 	rf.updateCommit(args.LeaderCommit)

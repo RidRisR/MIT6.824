@@ -256,19 +256,22 @@ func (rf *Raft) leaderCommit() int {
 
 func (rf *Raft) handleAppendEntries(reply *AppendEntriesReply) {
 	if reply.Term < rf.currentTerm {
+		// rf.PortPrintf("Term?! %d, %d", reply.Term, rf.currentTerm)
 		return
 	}
 	i := reply.Peer
 	if reply.Accepted {
-		if reply.LastIndex > rf.matchIndex[i] {
+		if reply.LastIndex >= rf.matchIndex[i] {
 			rf.nextIndex[i] = reply.LastIndex + 1
 			rf.matchIndex[i] = reply.LastIndex
+
 		}
+		// rf.PortPrintf("%v!!!! %d, %d", reply.Accepted, reply.LastIndex, rf.matchIndex[i])
 		return
 	}
-	if reply.LastIndex > rf.matchIndex[i] {
+	// rf.PortPrintf("%v!!!! %d, %d", reply.Accepted, reply.LastIndex, rf.matchIndex[i])
+	if reply.LastIndex >= rf.matchIndex[i] {
 		lastIndex, _ := rf.getLastConsensus(reply.LastIndex, reply.LastTerm)
-		// rf.PortPrintf("new consensus%d %d,%d!= %d,%d", i, reply.LastIndex, reply.LastTerm, lastIndex, lastTerm)
 		rf.nextIndex[i] = lastIndex + 1
 	}
 }
@@ -399,6 +402,7 @@ func (rf *Raft) ticker() {
 				}
 			}
 			toApply := rf.leaderCommit()
+			rf.PortPrintf("to commit %d", toApply)
 			go rf.apply(toApply)
 			go rf.persist()
 			if latestTerm <= rf.currentTerm {
