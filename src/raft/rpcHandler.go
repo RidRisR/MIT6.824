@@ -134,7 +134,7 @@ func (rf *Raft) updateCommit(leaderCommit int) {
 }
 
 func (rf *Raft) resetTimer() {
-	rf.msgCh <- LogEntrie{}
+	rf.msgCh <- 0
 }
 
 func (rf *Raft) apply(end int) {

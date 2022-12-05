@@ -80,7 +80,7 @@ type Raft struct {
 	//volatile
 	commitIndex      int
 	lastAppliedIndex int
-	msgCh            chan LogEntrie
+	msgCh            chan int64
 	applyOpCh        chan int
 	applyCh          chan ApplyMsg
 	heartbeatTimeout time.Duration
@@ -253,17 +253,15 @@ func (rf *Raft) leaderCommit() int {
 	return toCommit + oldCommitIndex + 1
 }
 
-func (rf *Raft) handleAppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply, ch *chan bool) {
+func (rf *Raft) handleAppendEntries(i int, args *AppendEntriesArgs, reply *AppendEntriesReply, ch *chan bool) {
 	<-*ch
-	atomic.AddInt64(count, 1)
 	if rf.currentTerm != args.Term {
 		// rf.PortPrintf("call end%d (%d != %d?)", i, rf.currentTerm, reply.Term)
 		return
 	}
 	if reply.Accepted {
-		atomic.AddInt64(accepted, 1)
 		matchIndex := args.PrevLogIndex
-		if args.Type == LOG {
+		if args.Type == LOG && rf.state == LEADER {
 			matchIndex = args.Entries[len(args.Entries)-1].Index
 		}
 		if matchIndex > int(atomic.LoadInt64(&rf.matchIndex[i])) {
@@ -272,16 +270,17 @@ func (rf *Raft) handleAppendEntries(args *AppendEntriesArgs, reply *AppendEntrie
 		}
 		return
 	}
-	if rf.currentTerm == reply.Term {
+	if rf.currentTerm == reply.Term && rf.state == LEADER {
 		lastIndex, lastTerm := rf.getLastConsensus(reply.LastIndex, reply.LastTerm)
 		rf.PortPrintf("new consensus%d %d,%d!= %d,%d", i, reply.LastIndex, reply.LastTerm, lastIndex, lastTerm)
 		atomic.StoreInt64(&rf.nextIndex[i], int64(lastIndex)+1)
-	} else if reply.Term > atomic.LoadInt64(latestTerm) {
-		atomic.StoreInt64(latestTerm, reply.Term)
+	} else if reply.Term > rf.currentTerm {
+		rf.msgCh <- reply.Term
 	}
 }
 
 func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *int64, count *int64, accepted *int64) {
+	ch := make(chan bool)
 	args := &AppendEntriesArgs{
 		Type:         HEARTBEAT,
 		Term:         rf.currentTerm,
@@ -298,11 +297,17 @@ func (rf *Raft) sendAppendEntries(i int, reply *AppendEntriesReply, latestTerm *
 	if args.PrevLogIndex >= 0 {
 		args.PrevLogTerm = rf.logGetItem(args.PrevLogIndex).Term
 	}
-	ch := make(chan bool)
-	if rf.peers[i].Call("Raft.AppendEntries", args, reply) && rf.currentTerm == args.Term {
-		ch <- true
+	go rf.handleAppendEntries(i, args, reply, &ch)
+	if !rf.peers[i].Call("Raft.AppendEntries", args, reply) {
+		return
 	}
-	go rf.handleAppendEntries(args, reply, ch)
+	if reply.Accepted {
+		atomic.AddInt64(accepted, 1)
+	}
+	if rf.currentTerm == args.Term {
+		ch <- true
+		atomic.AddInt64(count, 1)
+	}
 }
 
 func (rf *Raft) sendHeartBeat() {
@@ -325,13 +330,6 @@ func (rf *Raft) sendHeartBeat() {
 	go func(sent *int64, accepted *int64, applyTo int) {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
-		for wait := 0; *sent <= int64(rf.nPeers) && wait < 10; wait++ {
-			time.Sleep(time.Millisecond)
-			if latestTerm > rf.currentTerm {
-				atomic.StoreInt32(&rf.state, FOLLOWER)
-				atomic.StoreInt64(&rf.currentTerm, latestTerm)
-			}
-		}
 		if *accepted > int64(rf.nPeers)/2 && rf.state == LEADER {
 			rf.PortPrintf("accepted %d, %d", *accepted, applyTo)
 			go rf.apply(applyTo)
@@ -412,11 +410,23 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // heartsbeats recently.
 func (rf *Raft) ticker() {
 	for !rf.killed() {
-
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
 		// time.Sleep().
 		if rf.state == LEADER {
+			latestTerm := rf.currentTerm
+			select {
+			case e := <-rf.msgCh:
+				if e > latestTerm {
+					latestTerm = e
+				}
+			default:
+			}
+			if latestTerm > rf.currentTerm {
+				atomic.StoreInt32(&rf.state, FOLLOWER)
+				atomic.StoreInt64(&rf.currentTerm, latestTerm)
+				continue
+			}
 			time.Sleep(rf.heartbeatTimeout)
 			rf.mu.Lock()
 			rf.sendHeartBeat()
@@ -461,7 +471,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 	rf.applyOpCh = make(chan int, 10)
 	rf.applyCh = applyCh
-	rf.msgCh = make(chan LogEntrie)
+	rf.msgCh = make(chan int64, rf.nPeers*2)
 	rf.votedFor = -1
 	rf.state = FOLLOWER
 	rf.heartbeatTimeout = heartbeatConst * time.Millisecond
