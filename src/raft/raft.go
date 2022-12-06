@@ -262,7 +262,7 @@ func (rf *Raft) leaderCommit() int {
 	return toCommit + oldCommitIndex + 1
 }
 
-func (rf *Raft) handleAppendEntries(reply *AppendEntriesReply) {
+func (rf *Raft) handleHeartbeatReply(reply *AppendEntriesReply) {
 	if reply.Term < rf.currentTerm {
 		// rf.PortPrintf("Term?! %d, %d", reply.Term, rf.currentTerm)
 		return
@@ -299,7 +299,7 @@ func (rf *Raft) sendAppendEntries(peer int, nextIndex int, args AppendEntriesArg
 	}
 }
 
-func (rf *Raft) sendHeartBeat(i int) {
+func (rf *Raft) sendHeartBeat(index int) {
 	if rf.state != LEADER {
 		return
 	}
@@ -425,7 +425,7 @@ func (rf *Raft) leaderLoop(leaderTerm int64) {
 		for {
 			select {
 			case reply := <-rf.msgCh:
-				rf.handleAppendEntries(&reply)
+				rf.handleHeartbeatReply(&reply)
 			default:
 				empty = true
 			}
