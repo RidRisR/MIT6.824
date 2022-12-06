@@ -120,6 +120,20 @@ func (rf *Raft) persist(term int64, voteFor int64) {
 	rf.persister.SaveRaftState(data)
 }
 
+func (rf *Raft) deferPersist() {
+	// Your code here (2C).
+	// Example:
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	rf.log.mu.Lock()
+	e.Encode(rf.log.data)
+	rf.log.mu.Unlock()
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
+}
+
 // restore previously persisted state.
 func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
@@ -379,6 +393,61 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	//tester index start from 1
 	return index + 1, int(term), isLeader
 }
+func (rf *Raft) followerLoop() {
+	for !rf.killed() {
+		select {
+		case <-time.After(rf.electionTimeout):
+			// rf.PortPrintf("lost connect with leader, term %d", rf.currentTerm)
+			rf.mu.Lock()
+			if rf.startElection() {
+				rf.sendHeartBeat(0)
+				rf.mu.Unlock()
+				return
+			}
+			rf.mu.Unlock()
+		case <-rf.msgCh:
+		}
+	}
+}
+
+func (rf *Raft) leaderLoop(leaderTerm int64) {
+	for !rf.killed() {
+		time.Sleep(rf.heartbeatTimeout)
+		rf.mu.Lock()
+		quit := false
+		if rf.state != LEADER || leaderTerm < rf.currentTerm {
+			quit = true
+		}
+		latestTerm := rf.currentTerm
+		empty := false
+		for {
+			select {
+			case reply := <-rf.msgCh:
+				rf.handleAppendEntries(&reply)
+			default:
+				empty = true
+			}
+			if empty {
+				break
+			}
+		}
+		toApply := rf.leaderCommit()
+		// rf.PortPrintf("to commit %d", toApply)
+		go rf.apply(toApply)
+		if latestTerm > rf.currentTerm {
+			rf.state = FOLLOWER
+			rf.currentTerm = latestTerm
+			go rf.persist(rf.currentTerm, rf.votedFor)
+			quit = true
+		}
+		if quit {
+			rf.mu.Unlock()
+			return
+		}
+		rf.sendHeartBeat(0)
+		rf.mu.Unlock()
+	}
+}
 
 // The ticker go routine starts a new election if this peer hasn't received
 // heartsbeats recently.
@@ -387,45 +456,14 @@ func (rf *Raft) ticker() {
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
 		// time.Sleep().
-		if rf.state == LEADER {
-			time.Sleep(rf.heartbeatTimeout)
-			rf.mu.Lock()
-			latestTerm := rf.currentTerm
-			flag := false
-			for {
-				select {
-				case reply := <-rf.msgCh:
-					rf.handleAppendEntries(&reply)
-				default:
-					flag = true
-				}
-				if flag {
-					break
-				}
-			}
-			toApply := rf.leaderCommit()
-			// rf.PortPrintf("to commit %d", toApply)
-			go rf.apply(toApply)
-			if latestTerm <= rf.currentTerm && rf.state == LEADER {
-				rf.sendHeartBeat(0)
-			} else {
-				rf.state = FOLLOWER
-				rf.currentTerm = latestTerm
-			}
-			go rf.persist(rf.currentTerm, rf.votedFor)
-			rf.mu.Unlock()
+		rf.mu.Lock()
+		state := rf.state
+		term := rf.currentTerm
+		rf.mu.Unlock()
+		if state == LEADER {
+			rf.leaderLoop(term)
 		} else {
-			select {
-			case <-time.After(rf.electionTimeout):
-				// rf.PortPrintf("lost connect with leader, term %d", rf.currentTerm)
-				rf.mu.Lock()
-				if rf.startElection() {
-					rf.sendHeartBeat(0)
-
-				}
-				rf.mu.Unlock()
-			case <-rf.msgCh:
-			}
+			rf.followerLoop()
 		}
 
 	}

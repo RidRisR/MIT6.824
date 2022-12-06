@@ -49,6 +49,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// TODO:Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.deferPersist()
 	reply.VoteGranted = false
 	reply.Term = rf.currentTerm
 	if args.Term < reply.Term {
@@ -60,12 +61,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.currentTerm = args.Term
 		reply.Term = args.Term
 		rf.state = FOLLOWER
-		defer rf.persist(rf.currentTerm, rf.votedFor)
 	} else if rf.votedFor != -1 && int(rf.votedFor) != args.CandidateId {
 		rf.PortPrintf("have voted to %d", rf.votedFor)
 		return
 	}
-
 	if rf.logGetLen() > 0 {
 		lastLog := rf.logGetItem(-1)
 		if lastLog.Term > args.LastLogTerm {
@@ -76,7 +75,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			return
 		}
 		rf.PortPrintf("log compare %d: %d,%d (%d) = %d,%d", args.CandidateId, args.LastLogIndex, args.LastLogTerm, args.Term, lastLog.Index, lastLog.Term)
-
 	}
 
 	rf.votedFor = int64(args.CandidateId)
@@ -88,6 +86,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.deferPersist()
 	reply.Term = rf.currentTerm
 	reply.Peer = rf.me
 	reply.Index = args.Index
@@ -103,7 +102,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.currentTerm = args.Term
 		reply.Term = args.Term
 	}
-	defer rf.persist(rf.currentTerm, rf.votedFor)
 	go rf.resetTimer()
 
 	reply.LastIndex, reply.LastTerm = rf.getLastConsensus(args.PrevLogIndex, args.PrevLogTerm)
