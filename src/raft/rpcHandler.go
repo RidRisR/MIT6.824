@@ -157,7 +157,7 @@ func (rf *Raft) waitForApply() {
 			rf.PortPrintf("wrong end %d,%d", rf.logGetLen()-1, end)
 		}
 		for _, log := range rf.logSlice(rf.lastAppliedIndex+1, end+1) {
-			rf.PortPrintf("commit: %d,%v", log.Index, log.Command)
+			//			rf.PortPrintf("commit: %d,%v", log.Index, log.Command)
 			rf.applyCh <- ApplyMsg{
 				CommandValid: true,
 				Command:      log.Command,

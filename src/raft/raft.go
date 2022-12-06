@@ -411,14 +411,14 @@ func (rf *Raft) followerLoop() {
 }
 
 func (rf *Raft) leaderLoop(leaderTerm int64) {
+	quit := false
 	for !rf.killed() {
 		time.Sleep(rf.heartbeatTimeout)
 		rf.mu.Lock()
-		quit := false
 		if rf.state != LEADER || leaderTerm < rf.currentTerm {
 			quit = true
 		}
-		latestTerm := rf.currentTerm
+		latestTerm := leaderTerm
 		empty := false
 		for {
 			select {
@@ -432,12 +432,11 @@ func (rf *Raft) leaderLoop(leaderTerm int64) {
 			}
 		}
 		toApply := rf.leaderCommit()
+		go rf.persist(rf.currentTerm, rf.votedFor)
 		// rf.PortPrintf("to commit %d", toApply)
-		go rf.apply(toApply)
 		if latestTerm > rf.currentTerm {
 			rf.state = FOLLOWER
 			rf.currentTerm = latestTerm
-			go rf.persist(rf.currentTerm, rf.votedFor)
 			quit = true
 		}
 		if quit {
@@ -445,6 +444,7 @@ func (rf *Raft) leaderLoop(leaderTerm int64) {
 			return
 		}
 		rf.sendHeartBeat(0)
+		go rf.apply(toApply)
 		rf.mu.Unlock()
 	}
 }
