@@ -86,7 +86,6 @@ type Raft struct {
 	heartbeatTimeout time.Duration
 	electionTimeout  time.Duration
 	state            int32
-	heartbeatIndex   int
 
 	//volatile for leader
 	nextIndex  []int
@@ -107,13 +106,13 @@ func (rf *Raft) GetState() (int, bool) {
 // save Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
-func (rf *Raft) persist() {
+func (rf *Raft) persist(term int64, voteFor int64) {
 	// Your code here (2C).
 	// Example:
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
-	e.Encode(atomic.LoadInt64(&rf.currentTerm))
-	e.Encode(atomic.LoadInt64(&rf.votedFor))
+	e.Encode(term)
+	e.Encode(voteFor)
 	rf.log.mu.Lock()
 	e.Encode(rf.log.data)
 	rf.log.mu.Unlock()
@@ -187,16 +186,9 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // capitalized all field names in structs passed over RPC, and
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
-func (rf *Raft) sendRequestVote(server int, reply *RequestVoteReply, votes *int64) {
-	args := &RequestVoteArgs{
-		CandidateId:  rf.me,
-		Term:         atomic.LoadInt64(&rf.currentTerm),
-		LastLogIndex: rf.logGetLen() - 1,
-	}
-	if args.LastLogIndex >= 0 {
-		args.LastLogTerm = rf.logGetItem(args.LastLogIndex).Term
-	}
-	if rf.peers[server].Call("Raft.RequestVote", args, reply) {
+func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, votes *int64) {
+	reply := RequestVoteReply{}
+	if rf.peers[server].Call("Raft.RequestVote", &args, &reply) {
 		if reply.VoteGranted {
 			atomic.AddInt64(votes, 1)
 		}
@@ -278,16 +270,7 @@ func (rf *Raft) handleAppendEntries(reply *AppendEntriesReply) {
 	}
 }
 
-func (rf *Raft) sendAppendEntries(i int, peer int, reply *AppendEntriesReply) {
-	args := &AppendEntriesArgs{
-		Index:        i,
-		Type:         HEARTBEAT,
-		Term:         atomic.LoadInt64(&rf.currentTerm),
-		LeaderId:     rf.me,
-		LeaderCommit: rf.commitIndex,
-		PrevLogIndex: rf.logGetLen() - 1,
-	}
-	nextIndex := rf.nextIndex[peer]
+func (rf *Raft) sendAppendEntries(peer int, nextIndex int, args AppendEntriesArgs) {
 	if rf.logGetLen()-1 >= int(nextIndex) {
 		args.Type = LOG
 		args.Entries = rf.logSlice(int(nextIndex), -1)
@@ -296,8 +279,9 @@ func (rf *Raft) sendAppendEntries(i int, peer int, reply *AppendEntriesReply) {
 	if args.PrevLogIndex >= 0 {
 		args.PrevLogTerm = rf.logGetItem(args.PrevLogIndex).Term
 	}
-	if rf.peers[peer].Call("Raft.AppendEntries", args, reply) {
-		rf.msgCh <- *reply
+	reply := AppendEntriesReply{}
+	if rf.peers[peer].Call("Raft.AppendEntries", &args, &reply) {
+		rf.msgCh <- reply
 	}
 }
 
@@ -305,11 +289,18 @@ func (rf *Raft) sendHeartBeat(i int) {
 	if rf.state != LEADER {
 		return
 	}
-	for j := 0; j < rf.nPeers; j++ {
-		if j == rf.me {
+	args := AppendEntriesArgs{
+		Type:         HEARTBEAT,
+		Term:         rf.currentTerm,
+		LeaderId:     rf.me,
+		LeaderCommit: rf.commitIndex,
+		PrevLogIndex: rf.logGetLen() - 1,
+	}
+	for i := 0; i < rf.nPeers; i++ {
+		if i == rf.me {
 			continue
 		}
-		go rf.sendAppendEntries(i, j, &AppendEntriesReply{})
+		go rf.sendAppendEntries(i, rf.nextIndex[i], args)
 	}
 }
 
@@ -318,14 +309,22 @@ func (rf *Raft) startElection() bool {
 	// Assert(rf.state == CANDIDATE, "Wrong State")
 	rf.currentTerm++
 	rf.votedFor = int64(rf.me)
-	go rf.persist()
+	go rf.persist(rf.currentTerm, rf.votedFor)
 	rf.PortPrintf("new election, term %d", rf.currentTerm)
 	var votes int64 = 1
+	args := RequestVoteArgs{
+		CandidateId:  rf.me,
+		Term:         atomic.LoadInt64(&rf.currentTerm),
+		LastLogIndex: rf.logGetLen() - 1,
+	}
+	if args.LastLogIndex >= 0 {
+		args.LastLogTerm = rf.logGetItem(args.LastLogIndex).Term
+	}
 	for i := 0; i < rf.nPeers; i++ {
 		if i == rf.me {
 			continue
 		}
-		go rf.sendRequestVote(i, &RequestVoteReply{}, &votes)
+		go rf.sendRequestVote(i, args, &votes)
 	}
 
 	for wait := 0; atomic.LoadInt64(&votes) <= int64(rf.nPeers/2) && wait < 15; wait++ {
@@ -388,7 +387,7 @@ func (rf *Raft) ticker() {
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
 		// time.Sleep().
-		if atomic.LoadInt32(&rf.state) == LEADER {
+		if rf.state == LEADER {
 			time.Sleep(rf.heartbeatTimeout)
 			rf.mu.Lock()
 			latestTerm := rf.currentTerm
@@ -405,26 +404,22 @@ func (rf *Raft) ticker() {
 				}
 			}
 			toApply := rf.leaderCommit()
-			rf.PortPrintf("to commit %d", toApply)
+			// rf.PortPrintf("to commit %d", toApply)
 			go rf.apply(toApply)
-			go rf.persist()
+			go rf.persist(rf.currentTerm, rf.votedFor)
 			if latestTerm <= rf.currentTerm {
-				rf.heartbeatIndex++
-				rf.sendHeartBeat(rf.heartbeatIndex)
+				rf.sendHeartBeat(0)
 			} else {
 				rf.state = FOLLOWER
 				rf.currentTerm = latestTerm
-				rf.PortPrintf("hii %d", rf.heartbeatIndex)
 			}
 			rf.mu.Unlock()
-		}
-		if rf.state != LEADER {
+		} else {
 			select {
 			case <-time.After(rf.electionTimeout):
 				// rf.PortPrintf("lost connect with leader, term %d", rf.currentTerm)
 				rf.mu.Lock()
 				if rf.startElection() {
-					rf.heartbeatIndex = 0
 					rf.sendHeartBeat(0)
 
 				}
