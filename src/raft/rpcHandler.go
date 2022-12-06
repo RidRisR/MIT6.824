@@ -49,7 +49,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// TODO:Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	defer rf.persist()
+	defer rf.persist(reply.Term, rf.votedFor)
 	reply.VoteGranted = false
 	reply.Term = rf.currentTerm
 	if args.Term < reply.Term {
@@ -75,7 +75,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.PortPrintf("not longest log")
 			return
 		}
-		rf.PortPrintf("log compare %d: %d,%d (%d) = %d,%d", args.CandidateId, args.LastLogIndex, args.LastLogTerm, args.Term, args.LastLogIndex, lastLog.Term)
+		//		rf.PortPrintf("log compare %d: %d,%d (%d) = %d,%d", args.CandidateId, args.LastLogIndex, args.LastLogTerm, args.Term, args.LastLogIndex, lastLog.Term)
 
 	}
 
@@ -88,7 +88,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	defer rf.persist()
+	defer rf.persist(reply.Term, rf.votedFor)
 	reply.Term = rf.currentTerm
 	reply.Peer = rf.me
 	reply.Index = args.Index
@@ -111,7 +111,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.PortPrintf("no consensus %d,%d != %d,%d", args.PrevLogIndex, args.PrevLogTerm, reply.LastIndex, reply.LastTerm)
 		return
 	}
-	rf.PortPrintf("consensus to %d: %d,%d (%d) = %d,%d (%d-%d)", args.LeaderId, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit, reply.LastIndex, reply.LastTerm, rf.commitIndex, rf.lastAppliedIndex)
+	//	rf.PortPrintf("consensus to %d: %d,%d (%d) = %d,%d (%d-%d)", args.LeaderId, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit, reply.LastIndex, reply.LastTerm, rf.commitIndex, rf.lastAppliedIndex)
 
 	if args.Type == LOG {
 		rf.logAppend(args.Entries)
