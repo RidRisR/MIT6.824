@@ -435,7 +435,7 @@ func (rf *Raft) leaderLoop(leaderTerm int64) {
 		go rf.persist(rf.currentTerm, rf.votedFor)
 		go rf.apply(toApply)
 		// rf.PortPrintf("to commit %d", toApply)
-		if latestTerm > rf.currentTerm {
+		if latestTerm > leaderTerm {
 			rf.state = FOLLOWER
 			rf.currentTerm = latestTerm
 			quit = true
