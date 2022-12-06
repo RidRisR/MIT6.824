@@ -433,6 +433,7 @@ func (rf *Raft) leaderLoop(leaderTerm int64) {
 		}
 		toApply := rf.leaderCommit()
 		go rf.persist(rf.currentTerm, rf.votedFor)
+		go rf.apply(toApply)
 		// rf.PortPrintf("to commit %d", toApply)
 		if latestTerm > rf.currentTerm {
 			rf.state = FOLLOWER
@@ -444,7 +445,6 @@ func (rf *Raft) leaderLoop(leaderTerm int64) {
 			return
 		}
 		rf.sendHeartBeat(0)
-		go rf.apply(toApply)
 		rf.mu.Unlock()
 	}
 }
