@@ -393,7 +393,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	//tester index start from 1
 	return index + 1, int(term), isLeader
 }
-func (rf *Raft) followerLoop() {
+func (rf *Raft) followerLoop() int64 {
 	for !rf.killed() {
 		select {
 		case <-time.After(rf.electionTimeout):
@@ -402,12 +402,13 @@ func (rf *Raft) followerLoop() {
 			if rf.startElection() {
 				rf.sendHeartBeat(0)
 				rf.mu.Unlock()
-				return
+				return rf.currentTerm
 			}
 			rf.mu.Unlock()
 		case <-rf.msgCh:
 		}
 	}
+	return 0
 }
 
 func (rf *Raft) leaderLoop(leaderTerm int64) {
@@ -415,7 +416,7 @@ func (rf *Raft) leaderLoop(leaderTerm int64) {
 	for !rf.killed() {
 		time.Sleep(rf.heartbeatTimeout)
 		rf.mu.Lock()
-		if rf.state != LEADER || leaderTerm < rf.currentTerm {
+		if rf.state != LEADER || leaderTerm < rf.currentTerm || leaderTerm == 0 {
 			quit = true
 		}
 		latestTerm := leaderTerm
@@ -432,7 +433,6 @@ func (rf *Raft) leaderLoop(leaderTerm int64) {
 			}
 		}
 		toApply := rf.leaderCommit()
-		go rf.persist(rf.currentTerm, rf.votedFor)
 		go rf.apply(toApply)
 		// rf.PortPrintf("to commit %d", toApply)
 		if latestTerm > leaderTerm {
@@ -440,6 +440,7 @@ func (rf *Raft) leaderLoop(leaderTerm int64) {
 			rf.currentTerm = latestTerm
 			quit = true
 		}
+		go rf.persist(rf.currentTerm, rf.votedFor)
 		if quit {
 			rf.mu.Unlock()
 			return
@@ -452,18 +453,19 @@ func (rf *Raft) leaderLoop(leaderTerm int64) {
 // The ticker go routine starts a new election if this peer hasn't received
 // heartsbeats recently.
 func (rf *Raft) ticker() {
+	state := FOLLOWER
+	var leaderTerm int64 = 0
 	for !rf.killed() {
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
 		// time.Sleep().
-		rf.mu.Lock()
-		state := rf.state
-		term := rf.currentTerm
-		rf.mu.Unlock()
-		if state == LEADER {
-			rf.leaderLoop(term)
-		} else {
-			rf.followerLoop()
+		switch {
+		case state == LEADER:
+			rf.leaderLoop(leaderTerm)
+			state = FOLLOWER
+		case state == FOLLOWER:
+			leaderTerm = rf.followerLoop()
+			state = LEADER
 		}
 
 	}
