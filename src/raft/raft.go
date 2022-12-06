@@ -203,7 +203,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, votes *int64) {
 	reply := RequestVoteReply{}
 	if rf.peers[server].Call("Raft.RequestVote", &args, &reply) {
-		if reply.VoteGranted {
+		if reply.Term == args.Term && reply.VoteGranted {
 			atomic.AddInt64(votes, 1)
 		}
 	}
@@ -393,6 +393,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	//tester index start from 1
 	return index + 1, int(term), isLeader
 }
+
 func (rf *Raft) followerLoop() int64 {
 	for !rf.killed() {
 		select {
