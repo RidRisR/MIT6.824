@@ -49,7 +49,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// TODO:Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	defer rf.deferPersist()
+	defer rf.lockedPersist()
 	reply.VoteGranted = false
 	reply.Term = rf.currentTerm
 	if args.Term < reply.Term {
@@ -86,7 +86,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	defer rf.deferPersist()
+	defer rf.lockedPersist()
 	reply.Term = rf.currentTerm
 	reply.Peer = rf.me
 	reply.Index = args.Index

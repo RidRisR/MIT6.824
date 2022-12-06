@@ -106,7 +106,7 @@ func (rf *Raft) GetState() (int, bool) {
 // save Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
-func (rf *Raft) persist(term int64, voteFor int64) {
+func (rf *Raft) unlockedPersist(term int64, voteFor int64) {
 	// Your code here (2C).
 	// Example:
 	w := new(bytes.Buffer)
@@ -120,7 +120,7 @@ func (rf *Raft) persist(term int64, voteFor int64) {
 	rf.persister.SaveRaftState(data)
 }
 
-func (rf *Raft) deferPersist() {
+func (rf *Raft) lockedPersist() {
 	// Your code here (2C).
 	// Example:
 	w := new(bytes.Buffer)
@@ -323,7 +323,7 @@ func (rf *Raft) startElection() bool {
 	// Assert(rf.state == CANDIDATE, "Wrong State")
 	rf.currentTerm++
 	rf.votedFor = int64(rf.me)
-	go rf.persist(rf.currentTerm, rf.votedFor)
+	go rf.unlockedPersist(rf.currentTerm, rf.votedFor)
 	rf.PortPrintf("new election, term %d", rf.currentTerm)
 	var votes int64 = 1
 	args := RequestVoteArgs{
@@ -441,7 +441,7 @@ func (rf *Raft) leaderLoop(leaderTerm int64) {
 			rf.currentTerm = latestTerm
 			quit = true
 		}
-		go rf.persist(rf.currentTerm, rf.votedFor)
+		go rf.unlockedPersist(rf.currentTerm, rf.votedFor)
 		if quit {
 			rf.mu.Unlock()
 			return
