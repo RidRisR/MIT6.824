@@ -420,7 +420,7 @@ func (rf *Raft) leaderLoop(leaderTerm int64) {
 		if rf.state != LEADER || leaderTerm < rf.currentTerm || leaderTerm == 0 {
 			quit = true
 		}
-		latestTerm := leaderTerm
+		latestTerm := rf.currentTerm
 		empty := false
 		for {
 			select {
