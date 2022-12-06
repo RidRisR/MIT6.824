@@ -406,13 +406,13 @@ func (rf *Raft) ticker() {
 			toApply := rf.leaderCommit()
 			// rf.PortPrintf("to commit %d", toApply)
 			go rf.apply(toApply)
-			go rf.persist(rf.currentTerm, rf.votedFor)
-			if latestTerm <= rf.currentTerm {
+			if latestTerm <= rf.currentTerm && rf.state == LEADER {
 				rf.sendHeartBeat(0)
 			} else {
 				rf.state = FOLLOWER
 				rf.currentTerm = latestTerm
 			}
+			go rf.persist(rf.currentTerm, rf.votedFor)
 			rf.mu.Unlock()
 		} else {
 			select {
