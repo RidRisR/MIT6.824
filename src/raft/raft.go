@@ -386,9 +386,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Command: command,
 	}
 	rf.logAppend([]LogEntrie{newLog})
-	if rf.logGetLen() != newLog.Index+1 {
-		panic("append error")
-	}
 	rf.PortPrintf("start %d,%v,%d", index, command, term)
 	//tester index start from 1
 	return index + 1, int(term), isLeader
@@ -413,19 +410,23 @@ func (rf *Raft) followerLoop() int64 {
 }
 
 func (rf *Raft) leaderLoop(leaderTerm int64) {
-	quit := false
 	for !rf.killed() {
 		time.Sleep(rf.heartbeatTimeout)
 		rf.mu.Lock()
 		if rf.state != LEADER || leaderTerm < rf.currentTerm || leaderTerm == 0 {
-			quit = true
+			rf.mu.Unlock()
+			return
 		}
 		latestTerm := rf.currentTerm
 		empty := false
 		for {
 			select {
 			case reply := <-rf.msgCh:
-				rf.handleHeartbeatReply(&reply)
+				if reply.Term > latestTerm {
+					latestTerm = reply.Term
+				} else {
+					rf.handleHeartbeatReply(&reply)
+				}
 			default:
 				empty = true
 			}
@@ -439,13 +440,11 @@ func (rf *Raft) leaderLoop(leaderTerm int64) {
 		if latestTerm > leaderTerm {
 			rf.state = FOLLOWER
 			rf.currentTerm = latestTerm
-			quit = true
-		}
-		go rf.unlockedPersist(rf.currentTerm, rf.votedFor)
-		if quit {
+			go rf.unlockedPersist(rf.currentTerm, rf.votedFor)
 			rf.mu.Unlock()
 			return
 		}
+		go rf.unlockedPersist(rf.currentTerm, rf.votedFor)
 		rf.sendHeartBeat(0)
 		rf.mu.Unlock()
 	}

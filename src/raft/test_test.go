@@ -10,7 +10,6 @@ package raft
 
 import (
 	"fmt"
-	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -902,7 +901,7 @@ func TestFigure8Unreliable2C(t *testing.T) {
 
 	nup := servers
 	for iters := 0; iters < 1000; iters++ {
-		log.Printf("times :%d", iters)
+		// log.Printf("times :%d", iters)
 		if iters == 200 {
 			cfg.setlongreordering(true)
 		}
